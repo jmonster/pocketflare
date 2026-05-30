@@ -11,7 +11,6 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/router"
-	"github.com/pocketbase/pocketbase/ui"
 
 	"github.com/pocketflare/pocketflare/adapter/r2blob"
 	"github.com/pocketflare/pocketflare/adapter/wasmdb"
@@ -73,18 +72,14 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		},
 	}))
 
-	// Admin dashboard route (same pattern as apis.Serve).
-	pbRouter.GET("/_/{path...}", apis.Static(ui.DistDirFS, false)).
-		BindFunc(func(e *core.RequestEvent) error {
-			if e.Request.PathValue(apis.StaticWildcardParam) != "" {
-				e.Response.Header().Set("Cache-Control", "max-age=1209600, stale-while-revalidate=86400")
-			}
-			return e.Next()
-		})
-
-	// Gzip is intentionally NOT bound on the admin route — under syumai/workers
-	// the Content-Encoding header from the gzip middleware does not survive the
-	// jshttp.ResponseWriter bridge, producing gzip bytes with no compression header.
+	// Admin dashboard is NOT served from the Worker. Each static asset request
+	// would trigger a cold WASM instantiation (39MB module). A page with 30+
+	// assets fires 30+ simultaneous cold boots, overwhelming the Workers runtime
+	// and producing 503 errors.
+	//
+	// The PocketBase admin UI is static HTML/JS/CSS that calls the REST API for
+	// data. Host it on Cloudflare Pages or any static host, pointed at this
+	// Worker's /api/* endpoints.
 
 	return pb, pbRouter, nil
 }

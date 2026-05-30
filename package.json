@@ -6,8 +6,5 @@
     "build": "make build",
     "deploy": "make deploy",
     "dev": "wrangler dev"
-  },
-  "devDependencies": {
-    "wrangler": "^3.109.2"
   }
 }
