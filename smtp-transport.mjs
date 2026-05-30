@@ -87,6 +87,8 @@ async function sendWithConfig(cfg) {
 
   try {
     await smtpHandshake(conn, cfg);
+    // Sync cache with any socket upgrade (STARTTLS replaces the socket).
+    cachedConn = { socket: conn.socket, writer: conn.writer, reader: conn.reader, host: cfg.host, port: cfg.port, tlsMode };
     return await sendOverSocket(conn, cfg);
   } catch (e) {
     await closeConn(conn);
@@ -98,7 +100,7 @@ async function sendWithConfig(cfg) {
 // ---- connection -----------------------------------------------------------
 
 async function newConnection(host, port, tlsMode) {
-  const secureTransport = tlsMode === 'on' ? 'on' : (tlsMode === 'starttls' ? 'starttls' : 'off');
+  const secureTransport = tlsMode === 'on' ? 'on' : 'off';
 
   const socket = connect({ hostname: host, port }, { secureTransport });
   const writer = socket.writable.getWriter();
@@ -136,22 +138,25 @@ async function smtpHandshake(conn, cfg) {
     throw new Error(`SMTP EHLO failed: ${formatResponse(ehlo)}`);
   }
 
-  // Detect STARTTLS offer (for port 587 starttls mode, the socket auto-upgrades
-  // after we send STARTTLS; for port 465 tlsMode='on', TLS is already active).
-  // With secureTransport='starttls', the runtime handles the TLS upgrade
-  // transparently when we send STARTTLS.
+  // For port 587 (STARTTLS), we connect with secureTransport='off' (plain TCP),
+  // send STARTTLS, then explicitly upgrade the socket with socket.startTls().
+  // For port 465 (implicit TLS), TLS is already active from the connection.
   if (cfg.tls && cfg.port !== 465) {
-    // Send STARTTLS. The socket with secureTransport='starttls' will upgrade.
     await writeLine(conn, 'STARTTLS');
     const starttlsResp = await readResponse(conn);
     if (starttlsResp.code !== 220) {
       throw new Error(`SMTP STARTTLS failed: ${formatResponse(starttlsResp)}`);
     }
-    // After STARTTLS, the server sends a new greeting over the encrypted channel.
-    // Re-read the greeting (the runtime handles the TLS upgrade transparently).
-    // Actually, with secureTransport='starttls', the socket is still the same
-    // readable/writable pair. The runtime performed the TLS upgrade and the
-    // next thing on the wire is the server's new 220 greeting.
+
+    // Upgrade to TLS. startTls() returns a new TLS-wrapped socket; the
+    // original socket is no longer usable.
+    const tlsSocket = conn.socket.startTls();
+    try { conn.writer.close(); } catch (_) {}
+    conn.socket = tlsSocket;
+    conn.writer = tlsSocket.writable.getWriter();
+    conn.reader = readableStreamReader(tlsSocket.readable);
+
+    // Read the new greeting sent by the server over the encrypted channel.
     const newGreeting = await readResponse(conn);
     if (newGreeting.code !== 220) {
       throw new Error(`SMTP post-STARTTLS greeting failed: ${formatResponse(newGreeting)}`);
