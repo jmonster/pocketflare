@@ -8,23 +8,35 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
+	"sync"
 	"syscall/js"
 	"time"
 
 	"github.com/pocketbase/pocketbase/tools/filesystem/blob"
 	"github.com/pocketflare/pocketflare/adapter/internal/jsutil"
+	"github.com/pocketflare/pocketflare/adapter/r2blob/s3sig"
 	"github.com/syumai/workers/cloudflare"
 )
 
+const r2PartSize = 10 * 1024 * 1024 // 10 MiB
+
 // Driver implements blob.Driver backed by Cloudflare R2.
 type Driver struct {
-	bucket js.Value
+	bucket     js.Value
+	bucketName string // actual R2 bucket name for S3 API calls
 }
 
-// New creates a new R2-backed blob Driver bound to the given Workers binding name.
-func New(bucketName string) *Driver {
-	return &Driver{bucket: cloudflare.GetBinding(bucketName)}
+// New creates a new R2-backed blob Driver.
+// bindingName is the Workers binding name (e.g. "STORAGE").
+// bucketName is the actual R2 bucket name (e.g. "pocketflare-storage"), used
+// for S3 CopyObject API calls. It must match the bucket_name in wrangler.toml.
+func New(bindingName, bucketName string) *Driver {
+	return &Driver{
+		bucket:     cloudflare.GetBinding(bindingName),
+		bucketName: bucketName,
+	}
 }
 
 // NormalizeError passes errors through unchanged.
@@ -110,10 +122,11 @@ func (d *Driver) NewRangeReader(ctx context.Context, key string, offset, length 
 	}, nil
 }
 
-// NewTypedWriter returns a writer that buffers the full object in memory and
-// uploads to R2 when Close is called.
-func (d *Driver) NewTypedWriter(_ context.Context, key, contentType string, opts *blob.WriterOptions) (blob.DriverWriter, error) {
+// NewTypedWriter returns a writer that streams data to R2 using multipart
+// upload. Files smaller than r2PartSize fall back to a single put() on Close.
+func (d *Driver) NewTypedWriter(ctx context.Context, key, contentType string, opts *blob.WriterOptions) (blob.DriverWriter, error) {
 	return &r2Writer{
+		ctx:         ctx,
 		driver:      d,
 		key:         key,
 		contentType: contentType,
@@ -121,42 +134,26 @@ func (d *Driver) NewTypedWriter(_ context.Context, key, contentType string, opts
 	}, nil
 }
 
-// Copy copies the object from srcKey to dstKey using a Get+Put fallback,
-// since the Workers R2 bindings do not expose a server-side copy.
-// Returns blob.ErrNotFound if the source does not exist.
+// Copy copies srcKey to dstKey. Uses server-side S3 CopyObject when R2 API
+// credentials are configured; otherwise streams via FixedLengthStream (no
+// Go-side buffering).
 func (d *Driver) Copy(ctx context.Context, dstKey, srcKey string) error {
-	p := d.bucket.Call("get", srcKey)
-	v, err := jsutil.AwaitPromise(ctx, p)
-	if err != nil {
-		return err
-	}
-	if v.IsNull() {
-		return blob.ErrNotFound
+	accessKey := cloudflare.Getenv("R2_ACCESS_KEY_ID")
+	secretKey := cloudflare.Getenv("R2_SECRET_ACCESS_KEY")
+	accountID := cloudflare.Getenv("R2_ACCOUNT_ID")
+
+	if accessKey != "" && secretKey != "" && accountID != "" {
+		return d.s3CopyObject(ctx, dstKey, srcKey, accessKey, secretKey, accountID)
 	}
 
-	body := convertReadableStreamToReadCloser(v.Get("body"))
-	defer body.Close()
-
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return fmt.Errorf("r2 copy read: %w", err)
-	}
-
-	putOpts := newJSObject()
-	httpMeta := v.Get("httpMetadata")
-	if !httpMeta.IsUndefined() && !httpMeta.IsNull() {
-		putOpts.Set("httpMetadata", httpMeta)
-	}
-
-	ua := newUint8Array(len(data))
-	js.CopyBytesToJS(ua, data)
-	p2 := d.bucket.Call("put", dstKey, ua.Get("buffer"), putOpts)
-	_, err = jsutil.AwaitPromise(ctx, p2)
-	if err != nil {
-		return fmt.Errorf("r2 copy write: %w", err)
-	}
-	return nil
+	copyFallbackOnce.Do(func() {
+		log.Print("r2blob: R2 API credentials not set; copies will stream through Worker " +
+			"(set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID for server-side CopyObject)")
+	})
+	return d.streamingCopy(ctx, dstKey, srcKey)
 }
+
+var copyFallbackOnce sync.Once
 
 // Delete removes the object at key.
 func (d *Driver) Delete(ctx context.Context, key string) error {
@@ -192,69 +189,257 @@ func (r *r2Reader) Attributes() *blob.ReaderAttributes {
 	}
 }
 
-// r2Writer buffers writes and uploads to R2 on Close.
+// r2Writer streams data to R2 using multipart upload.
+// Files under r2PartSize fall back to a single put() on Close.
 type r2Writer struct {
+	ctx         context.Context
 	driver      *Driver
 	key         string
 	contentType string
 	opts        *blob.WriterOptions
-	buf         bytes.Buffer
+
+	upload     js.Value   // R2MultipartUpload, nil until first flush
+	partNumber int
+	parts      []js.Value // accumulated R2UploadedPart values
+
+	buf       bytes.Buffer
+	totalSize int64
 }
 
-func (w *r2Writer) Write(p []byte) (int, error) { return w.buf.Write(p) }
+func (w *r2Writer) Write(p []byte) (int, error) {
+	w.totalSize += int64(len(p))
+	n, err := w.buf.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if w.buf.Len() >= r2PartSize {
+		if err := w.flushPart(); err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
 
-func (w *r2Writer) Close() error {
+func (w *r2Writer) flushPart() error {
+	if w.buf.Len() == 0 {
+		return nil
+	}
+
+	if w.upload.IsUndefined() || w.upload.IsNull() {
+		putOpts := buildPutOpts(w.contentType, w.opts)
+		p := w.driver.bucket.Call("createMultipartUpload", w.key, putOpts)
+		upload, err := jsutil.AwaitPromise(w.ctx, p)
+		if err != nil {
+			return fmt.Errorf("r2 createMultipartUpload: %w", err)
+		}
+		w.upload = upload
+		w.partNumber = 0
+	}
+
+	w.partNumber++
 	data := w.buf.Bytes()
 	ua := newUint8Array(len(data))
 	js.CopyBytesToJS(ua, data)
 
-	putOpts := newJSObject()
-
-	// Map HTTP metadata from the WriterOptions.
-	httpMeta := newJSObject()
-	if w.contentType != "" {
-		httpMeta.Set("contentType", w.contentType)
+	p := w.upload.Call("uploadPart", w.partNumber, ua.Get("buffer"))
+	result, err := jsutil.AwaitPromise(w.ctx, p)
+	if err != nil {
+		go w.abortUpload()
+		return fmt.Errorf("r2 uploadPart %d: %w", w.partNumber, err)
 	}
-	if w.opts != nil {
-		if w.opts.CacheControl != "" {
-			httpMeta.Set("cacheControl", w.opts.CacheControl)
+	w.parts = append(w.parts, result)
+	w.buf.Reset()
+	return nil
+}
+
+func (w *r2Writer) Close() error {
+	defer w.buf.Reset()
+
+	if w.totalSize == 0 && (w.upload.IsUndefined() || w.upload.IsNull()) {
+		return w.singlePut([]byte{})
+	}
+
+	// Small file fast path: everything fits in one buffer.
+	if w.upload.IsUndefined() || w.upload.IsNull() {
+		return w.singlePut(w.buf.Bytes())
+	}
+
+	// Flush final part (may be smaller than 5 MiB — allowed for the last part).
+	if w.buf.Len() > 0 {
+		if err := w.flushPart(); err != nil {
+			return err
 		}
-		if w.opts.ContentDisposition != "" {
-			httpMeta.Set("contentDisposition", w.opts.ContentDisposition)
+	}
+
+	return w.completeUpload()
+}
+
+func (w *r2Writer) singlePut(data []byte) error {
+	ua := newUint8Array(len(data))
+	js.CopyBytesToJS(ua, data)
+	putOpts := buildPutOpts(w.contentType, w.opts)
+	p := w.driver.bucket.Call("put", w.key, ua.Get("buffer"), putOpts)
+	_, err := jsutil.AwaitPromise(w.ctx, p)
+	return err
+}
+
+func (w *r2Writer) completeUpload() error {
+	partsArray := js.Global().Get("Array").New(len(w.parts))
+	for i, p := range w.parts {
+		partsArray.SetIndex(i, p)
+	}
+	p := w.upload.Call("complete", partsArray)
+	_, err := jsutil.AwaitPromise(w.ctx, p)
+	if err != nil {
+		go w.abortUpload()
+		return fmt.Errorf("r2 complete multipart: %w", err)
+	}
+	return nil
+}
+
+// abortUpload calls abort on the multipart upload. Runs in a goroutine with a
+// background context so cancellation doesn't prevent cleanup.
+func (w *r2Writer) abortUpload() {
+	if w.upload.IsUndefined() || w.upload.IsNull() {
+		return
+	}
+	p := w.upload.Call("abort")
+	jsutil.AwaitPromise(context.Background(), p) // best effort
+}
+
+// ---------------------------------------------------------------------------
+// Copy helpers
+// ---------------------------------------------------------------------------
+
+// s3CopyObject performs a server-side copy via the R2 S3 HTTP API.
+// Zero data flows through the Worker.
+func (d *Driver) s3CopyObject(ctx context.Context, dstKey, srcKey string, accessKey, secretKey, accountID string) error {
+	host := accountID + ".r2.cloudflarestorage.com"
+	path := s3sig.CanonicalURI(d.bucketName + "/" + dstKey)
+	srcPath := s3sig.CanonicalURI(d.bucketName + "/" + srcKey)
+
+	now := time.Now()
+	payloadSHA := s3sig.EmptyPayloadHash()
+
+	auth := s3sig.Sign(
+		accessKey, secretKey, "auto", "s3", now,
+		"PUT", host, path,
+		map[string]string{"x-amz-copy-source": srcPath},
+		payloadSHA,
+	)
+
+	url := "https://" + host + path
+
+	fetchOpts := newJSObject()
+	fetchOpts.Set("method", "PUT")
+
+	headers := newJSObject()
+	headers.Set("x-amz-date", now.Format("20060102T150405Z"))
+	headers.Set("x-amz-content-sha256", payloadSHA)
+	headers.Set("x-amz-copy-source", srcPath)
+	headers.Set("Authorization", auth)
+	fetchOpts.Set("headers", headers)
+
+	promise := js.Global().Call("fetch", url, fetchOpts)
+	resp, err := jsutil.AwaitPromise(ctx, promise)
+	if err != nil {
+		return fmt.Errorf("s3 copy fetch: %w", err)
+	}
+
+	status := resp.Get("status").Int()
+	if status == 200 {
+		return nil
+	}
+	if status == 404 {
+		return blob.ErrNotFound
+	}
+
+	body, _ := jsutil.AwaitPromise(ctx, resp.Call("text"))
+	return fmt.Errorf("s3 copy: HTTP %d: %s", status, body.String())
+}
+
+// streamingCopy copies via FixedLengthStream Get+Put. No Go buffering; data
+// streams through the Worker.
+func (d *Driver) streamingCopy(ctx context.Context, dstKey, srcKey string) error {
+	p := d.bucket.Call("get", srcKey)
+	v, err := jsutil.AwaitPromise(ctx, p)
+	if err != nil {
+		return err
+	}
+	if v.IsNull() {
+		return blob.ErrNotFound
+	}
+
+	body := v.Get("body")
+	size := v.Get("size")
+
+	// FixedLengthStream gives the ReadableStream a known length, satisfying
+	// put()'s requirement. Without this, R2 put would reject the body from
+	// get() with "readable stream must have a known length."
+	// Ref: https://github.com/cloudflare/workers-sdk/issues/6425
+	fls := js.Global().Get("FixedLengthStream").New(body, size)
+	readable := fls.Get("readable")
+
+	putOpts := copyPutOpts(v)
+	p2 := d.bucket.Call("put", dstKey, readable, putOpts)
+	_, err = jsutil.AwaitPromise(ctx, p2)
+	if err != nil {
+		return fmt.Errorf("r2 streaming copy write: %w", err)
+	}
+	return nil
+}
+
+// copyPutOpts builds putOpts from a source R2Object, preserving httpMetadata
+// and customMetadata on the destination.
+func copyPutOpts(src js.Value) js.Value {
+	putOpts := newJSObject()
+	if httpMeta := src.Get("httpMetadata"); !httpMeta.IsUndefined() && !httpMeta.IsNull() {
+		putOpts.Set("httpMetadata", httpMeta)
+	}
+	if customMeta := src.Get("customMetadata"); !customMeta.IsUndefined() && !customMeta.IsNull() {
+		putOpts.Set("customMetadata", customMeta)
+	}
+	return putOpts
+}
+
+// buildPutOpts constructs a JS R2PutOptions object from Go-level writer params.
+func buildPutOpts(contentType string, opts *blob.WriterOptions) js.Value {
+	putOpts := newJSObject()
+	httpMeta := newJSObject()
+	if contentType != "" {
+		httpMeta.Set("contentType", contentType)
+	}
+	if opts != nil {
+		if opts.CacheControl != "" {
+			httpMeta.Set("cacheControl", opts.CacheControl)
 		}
-		if w.opts.ContentEncoding != "" {
-			httpMeta.Set("contentEncoding", w.opts.ContentEncoding)
+		if opts.ContentDisposition != "" {
+			httpMeta.Set("contentDisposition", opts.ContentDisposition)
 		}
-		if w.opts.ContentLanguage != "" {
-			httpMeta.Set("contentLanguage", w.opts.ContentLanguage)
+		if opts.ContentEncoding != "" {
+			httpMeta.Set("contentEncoding", opts.ContentEncoding)
 		}
-		if len(w.opts.Metadata) > 0 {
-			customMeta := make(map[string]any, len(w.opts.Metadata))
-			for k, v := range w.opts.Metadata {
+		if opts.ContentLanguage != "" {
+			httpMeta.Set("contentLanguage", opts.ContentLanguage)
+		}
+		if len(opts.Metadata) > 0 {
+			customMeta := make(map[string]any, len(opts.Metadata))
+			for k, v := range opts.Metadata {
 				customMeta[k] = v
 			}
 			putOpts.Set("customMetadata", customMeta)
 		}
-		if len(w.opts.ContentMD5) > 0 {
-			putOpts.Set("md5", string(w.opts.ContentMD5))
+		if len(opts.ContentMD5) > 0 {
+			putOpts.Set("md5", string(opts.ContentMD5))
 		}
 	}
 	putOpts.Set("httpMetadata", httpMeta)
-
-	p := w.driver.bucket.Call("put", w.key, ua.Get("buffer"), putOpts)
-	_, err := jsutil.AwaitPromise(context.Background(), p)
-	return err
+	return putOpts
 }
 
-// httpMetadataFields extracts HTTP metadata from a JS R2 object's httpMetadata value.
-type httpMetadataFields struct {
-	ContentType        string
-	ContentLanguage    string
-	ContentDisposition string
-	ContentEncoding    string
-	CacheControl       string
-	CacheExpiry        time.Time
-}
+// ---------------------------------------------------------------------------
+// JS interop helpers
+// ---------------------------------------------------------------------------
 
 // newJSObject creates a new JavaScript Object.
 func newJSObject() js.Value {
@@ -305,6 +490,10 @@ func strRecordToMap(v js.Value) map[string]string {
 	return m
 }
 
+// ---------------------------------------------------------------------------
+// ReadableStream bridge
+// ---------------------------------------------------------------------------
+
 // readableStreamToReadCloser wraps a JavaScript ReadableStream as an io.ReadCloser.
 type readableStreamToReadCloser struct {
 	stream js.Value
@@ -333,8 +522,7 @@ func (r *readableStreamToReadCloser) Read(p []byte) (n int, err error) {
 	if err != nil {
 		return 0, err
 	}
-	done := result.Get("done")
-	if !done.IsUndefined() && done.Bool() {
+	if done := result.Get("done"); !done.IsUndefined() && done.Bool() {
 		return 0, io.EOF
 	}
 	chunk := result.Get("value")
@@ -342,8 +530,8 @@ func (r *readableStreamToReadCloser) Read(p []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 
-	// Read the entire chunk into a Go-owned buffer so that bytes
-	// are never lost when len(p) is smaller than the JS chunk.
+	// Copy the entire JS chunk into a Go-owned buffer so bytes are never
+	// lost when len(p) is smaller than the chunk.
 	length := chunk.Get("byteLength").Int()
 	if length > 0 {
 		tmp := js.Global().Get("Uint8Array").New(chunk)
@@ -381,6 +569,16 @@ func httpMetadataFromJS(v js.Value) httpMetadataFields {
 		CacheControl:       maybeString(v.Get("cacheControl")),
 		CacheExpiry:        cacheExpiry,
 	}
+}
+
+// httpMetadataFields extracts HTTP metadata from a JS R2 object's httpMetadata value.
+type httpMetadataFields struct {
+	ContentType        string
+	ContentLanguage    string
+	ContentDisposition string
+	ContentEncoding    string
+	CacheControl       string
+	CacheExpiry        time.Time
 }
 
 // jsObjectToAttributes converts a JS R2 Object value to blob.Attributes.

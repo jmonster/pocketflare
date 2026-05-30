@@ -13,9 +13,9 @@ import (
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/router"
 
+	"github.com/pocketflare/pocketflare/adapter/mail"
 	"github.com/pocketflare/pocketflare/adapter/r2blob"
 	"github.com/pocketflare/pocketflare/adapter/wasmdb"
-	"github.com/pocketflare/pocketflare/adapter/webmailer"
 )
 
 // New creates a new PocketBase app pre-configured for the Workers runtime.
@@ -35,10 +35,10 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 
 	// Wire R2-backed filesystem drivers before Bootstrap.
 	core.NewWasmFilesystem = func() (*filesystem.System, error) {
-		return filesystem.NewBlob(r2blob.New("STORAGE")), nil
+		return filesystem.NewBlob(r2blob.New("STORAGE", "pocketflare-storage")), nil
 	}
 	core.NewWasmBackupsFilesystem = func() (*filesystem.System, error) {
-		return filesystem.NewBlob(r2blob.New("BACKUPS")), nil
+		return filesystem.NewBlob(r2blob.New("BACKUPS", "pocketflare-backups")), nil
 	}
 
 	applyNewInstallDefaults(pb, config)
@@ -47,9 +47,7 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		return nil, nil, fmt.Errorf("bootstrap: %w", err)
 	}
 
-	if config.MailWebhookURL != "" {
-		registerWebMailer(pb, config)
-	}
+	registerMailer(pb, config)
 
 	// Inject user-defined Go migrations before running all migrations.
 	core.AppMigrations.Copy(config.AppMigrations)
@@ -69,6 +67,16 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Wire the Durable Object realtime bridge so SSE works across isolates.
+	initRealtimeDO(pb)
+
+	// D1 doesn't support SQLite PRAGMA statements. Replace the
+	// __pbDBOptimize__ cron job with a D1-safe no-op.
+	pb.Cron().Remove("__pbDBOptimize__")
+	pb.Cron().MustAdd("__pbDBOptimize__", "0 0 * * *", func() {
+		pb.Logger().Debug("D1 optimize skipped (D1 handles optimization automatically)")
+	})
 
 	// Register global CORS middleware (same defaults as apis.Serve).
 	pbRouter.Bind(apis.CORS(apis.CORSConfig{
@@ -102,14 +110,46 @@ func applyNewInstallDefaults(app *pocketbase.PocketBase, config Config) {
 	settings.TrustedProxy.Headers = append([]string(nil), headers...)
 }
 
-func registerWebMailer(app *pocketbase.PocketBase, config Config) {
-	client := &webmailer.Client{
-		URL:   config.MailWebhookURL,
-		Token: config.MailWebhookToken,
+func registerMailer(app *pocketbase.PocketBase, config Config) {
+	// Priority 1: explicit POCKETFLARE_MAIL_PROVIDER env var.
+	if config.MailProvider != "" {
+		ml, err := mail.NewHTTPMailer(config.MailProvider, config.MailAPIKey, config.MailDomain, config.MailWebhookURL, config.MailWebhookToken)
+		if err != nil {
+			app.Logger().Warn("mail: invalid provider config, mail will not be sent", "provider", config.MailProvider, "error", err)
+			return
+		}
+		app.OnMailerSend().BindFunc(func(e *core.MailerEvent) error {
+			e.Mailer = ml
+			return e.Next()
+		})
+		return
 	}
 
+	// Priority 2: legacy POCKETFLARE_MAIL_WEBHOOK_URL env var.
+	if config.MailWebhookURL != "" {
+		ml, _ := mail.NewHTTPMailer("webhook", "", "", config.MailWebhookURL, config.MailWebhookToken)
+		app.OnMailerSend().BindFunc(func(e *core.MailerEvent) error {
+			e.Mailer = ml
+			return e.Next()
+		})
+		return
+	}
+
+	// Priority 3: SMTP via PocketBase admin SMTP settings (on-demand).
 	app.OnMailerSend().BindFunc(func(e *core.MailerEvent) error {
-		e.Mailer = client
+		s := app.Settings().SMTP
+		if !s.Enabled {
+			return e.Next() // no mailer configured; PB will log a warning
+		}
+		e.Mailer = &mail.SMTPClient{
+			Host:       s.Host,
+			Port:       s.Port,
+			Username:   s.Username,
+			Password:   s.Password,
+			TLS:        s.TLS,
+			AuthMethod: s.AuthMethod,
+			LocalName:  s.LocalName,
+		}
 		return e.Next()
 	})
 }
