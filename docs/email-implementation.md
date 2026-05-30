@@ -1,8 +1,18 @@
-# Email Implementation Handoff
+# Email Implementation
 
-## Current State
+## Current State (updated 2026-05-30)
 
-Pocketflare now supports a generic HTTPS mail webhook:
+All three transport modes are implemented in `adapter/mail/`:
+
+1. **HTTP providers** — Resend, Postmark, SendGrid, Mailgun (`POCKETFLARE_MAIL_PROVIDER` + `POCKETFLARE_MAIL_API_KEY`).
+2. **Generic webhook** — legacy path (`POCKETFLARE_MAIL_WEBHOOK_URL`).
+3. **SMTP** — `cloudflare:sockets` via `smtp-transport.mjs`, supporting implicit TLS (465) and STARTTLS (587). Reads PocketBase admin SMTP settings at send time so admin UI changes take effect without re-deploy.
+
+See `adapter/mail/payload.go` for the shared JSON payload format used by webhook and HTTP providers.
+
+## Original Design Doc
+
+The sections below describe the original design and provider-specific API shapes.
 
 - `POCKETFLARE_MAIL_WEBHOOK_URL`: required to enable the webhook mailer.
 - `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token.
@@ -42,9 +52,9 @@ PocketBase does not use that API. It uses Go `net/smtp` through `tools/mailer.SM
 
 Treat SMTP-over-Workers-sockets as a separate implementation, not a docs tweak.
 
-## Track 1: Production HTTP Mail Providers
+## Track 1: Production HTTP Mail Providers (IMPLEMENTED)
 
-Goal: support provider APIs directly without requiring users to operate a webhook bridge.
+Supports: resend, postmark, sendgrid, mailgun, webhook. Factory in `adapter/mail/factory.go`.
 
 Suggested first providers:
 - Resend
@@ -67,9 +77,9 @@ Validation:
 - Run `make build`.
 - Use `wrangler dev` or a deploy target with a controlled webhook endpoint and send a password-reset email through the real PocketBase route.
 
-## Track 2: SMTP Over Workers Sockets
+## Track 2: SMTP Over Workers Sockets (IMPLEMENTED)
 
-Goal: make PocketBase SMTP settings work without asking users to rewrite mail logic.
+JS transport in `smtp-transport.mjs`, Go wrapper in `adapter/mail/smtp.go`. Connection reuse via RSET.
 
 Constraints:
 - Do not depend on Go `net/smtp` dialing.

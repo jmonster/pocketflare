@@ -3,12 +3,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"strings"
 
 	"github.com/pocketflare/pocketflare/adapter"
 	"github.com/syumai/workers"
+	"github.com/syumai/workers/cloudflare/cron"
 )
 
 func main() {
@@ -17,6 +19,9 @@ func main() {
 		AppURL:           trimmedEnv("POCKETFLARE_APP_URL"),
 		AdminEmail:       trimmedEnv("POCKETFLARE_ADMIN_EMAIL"),
 		AdminPassword:    os.Getenv("POCKETFLARE_ADMIN_PASSWORD"),
+		MailProvider:     trimmedEnv("POCKETFLARE_MAIL_PROVIDER"),
+		MailAPIKey:       os.Getenv("POCKETFLARE_MAIL_API_KEY"),
+		MailDomain:       trimmedEnv("POCKETFLARE_MAIL_DOMAIN"),
 		MailWebhookURL:   trimmedEnv("POCKETFLARE_MAIL_WEBHOOK_URL"),
 		MailWebhookToken: os.Getenv("POCKETFLARE_MAIL_WEBHOOK_TOKEN"),
 	})
@@ -35,6 +40,19 @@ func main() {
 	}
 
 	workers.ServeNonBlock(handler)
+
+	// Wire PocketBase cron to Workers Cron Triggers.
+	// The wrangler.toml [triggers] section fires a scheduled event every
+	// minute; this handler runs any due PocketBase cron jobs.
+	cron.ScheduleTaskNonBlock(func(ctx context.Context) error {
+		ev, err := cron.NewEvent(ctx)
+		if err != nil {
+			return err
+		}
+		pb.Cron().RunDue(ev.ScheduledTime)
+		return nil
+	})
+
 	workers.Ready()
 	select {}
 }

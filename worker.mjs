@@ -1,7 +1,16 @@
 import "./wasm_exec.js";
 import { createRuntimeContext, loadModule } from "./runtime.mjs";
+import { RealtimeDO } from "./realtime-do.mjs";
+import { registerSmtpTransport } from "./smtp-transport.mjs";
 
 async function run(ctx) {
+  try {
+    registerSmtpTransport();
+  } catch (_) {
+    // SMTP transport unavailable — non-SMTP deployments are unaffected.
+    // Go will report a clear error at send time if SMTP is configured.
+  }
+
   const go = new Go();
   const mod = await loadModule();
 
@@ -52,6 +61,16 @@ async function fetch(req, env, ctx) {
     return env.ASSETS.fetch(req);
   }
 
+  // Realtime SSE connections live in a Durable Object so they can hold
+  // connections open beyond the Worker fetch timeout and fan out across
+  // isolates. Only GET (connection) is intercepted; POST (subscriptions)
+  // still goes through Go for auth and access control.
+  if (url.pathname === "/api/realtime" && req.method === "GET") {
+    const id = env.REALTIME_DO.idFromName("hub");
+    const stub = env.REALTIME_DO.get(id);
+    return stub.fetch(req);
+  }
+
   try {
     const binding = await getBinding(env, ctx);
     const response = await binding.handleRequest(req);
@@ -69,4 +88,5 @@ async function scheduled(event, env, ctx) {
   return binding.runScheduler(event);
 }
 
+export { RealtimeDO };
 export default { fetch, scheduled };
