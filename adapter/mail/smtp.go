@@ -5,9 +5,6 @@ package mail
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	netmail "net/mail"
 	"strings"
@@ -70,17 +67,12 @@ func (c *SMTPClient) Send(msg *pbmailer.Message) error {
 		jsRecipients[i] = r
 	}
 
-	password := c.Password
-	if derived, ok := deriveSESSMTPPassword(c.Host, c.Username, c.Password); ok {
-		password = derived
-	}
-
 	config := map[string]any{
 		"host":        c.Host,
 		"port":        c.Port,
 		"tls":         tls,
 		"username":    c.Username,
-		"password":    password,
+		"password":    c.Password,
 		"authMethod":  authMethod,
 		"localName":   localName,
 		"from":        msg.From.Address,
@@ -96,42 +88,6 @@ func (c *SMTPClient) Send(msg *pbmailer.Message) error {
 		return fmt.Errorf("mail: smtp send: %w", err)
 	}
 	return nil
-}
-
-func deriveSESSMTPPassword(host, username, password string) (string, bool) {
-	region, ok := sesRegionFromSMTPHost(host)
-	if !ok {
-		return "", false
-	}
-	if len(password) != 40 || !strings.HasPrefix(username, "AKIA") {
-		return "", false
-	}
-
-	key := hmacSHA256([]byte("AWS4"+password), "11111111")
-	key = hmacSHA256(key, region)
-	key = hmacSHA256(key, "ses")
-	key = hmacSHA256(key, "aws4_request")
-	key = hmacSHA256(key, "SendRawEmail")
-
-	signatureAndVersion := append([]byte{0x04}, key...)
-	return base64.StdEncoding.EncodeToString(signatureAndVersion), true
-}
-
-func sesRegionFromSMTPHost(host string) (string, bool) {
-	host = strings.ToLower(strings.TrimSpace(host))
-	const prefix = "email-smtp."
-	const suffix = ".amazonaws.com"
-	if !strings.HasPrefix(host, prefix) || !strings.HasSuffix(host, suffix) {
-		return "", false
-	}
-	region := strings.TrimSuffix(strings.TrimPrefix(host, prefix), suffix)
-	return region, region != ""
-}
-
-func hmacSHA256(key []byte, message string) []byte {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(message))
-	return mac.Sum(nil)
 }
 
 // buildMIME constructs a complete MIME email and writes it to w.
