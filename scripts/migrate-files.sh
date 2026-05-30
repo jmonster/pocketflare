@@ -100,7 +100,7 @@ echo ""
 # Using process substitution (<(...)) instead of pipe to avoid subshell
 while IFS= read -r -d '' filepath; do
     relpath="${filepath#$STORAGE_ABS/}"
-    filesize=$(stat -f%z "$filepath" 2>/dev/null || stat -c%s "$filepath" 2>/dev/null || echo "0")
+    filesize=$(wc -c < "$filepath")
 
     # Size filter
     if [[ "$INCLUDE_ALL" != true ]] && [[ "$filesize" -gt "$MAX_SIZE" ]]; then
