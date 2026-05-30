@@ -1,14 +1,6 @@
 import "./wasm_exec.js";
 import { createRuntimeContext, loadModule } from "./runtime.mjs";
 
-globalThis.tryCatch = (fn) => {
-  try {
-    return { result: fn() };
-  } catch (e) {
-    return { error: e };
-  }
-};
-
 async function run(ctx) {
   const go = new Go();
   const mod = await loadModule();
