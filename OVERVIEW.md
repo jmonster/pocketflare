@@ -1,181 +1,163 @@
 # Pocketflare — PocketBase on Cloudflare Workers
 
+## Quick start (new app)
+
+```bash
+git clone https://github.com/pocketflare/pocketflare
+cd pocketflare
+./scripts/update-pb.sh v0.36.9
+pnpm install
+make build
+# Create Cloudflare resources (see below), then:
+make deploy
+```
+
+## Quick start (existing PocketBase app)
+
+```bash
+# Inside your PocketBase project:
+/pocketflare-migrate
+```
+
+This skill analyzes your project and applies the transformations described below.
+
 ## Architecture
 
-PocketBase Core (minimally patched, ~40 lines)
-  ├── DB layer ──→ adapter/wasmdb ──→ D1 (syumai/workers D1 driver)
-  ├── Filesystem ──→ adapter/r2blob ──→ R2 (syumai/workers R2 client)
+```
+PocketBase Core (4 patches, build-tag-gated)
+  ├── DB layer ──→ adapter/wasmdb ──→ D1 (no-op Tx wrapper)
+  ├── Filesystem ──→ adapter/r2blob ──→ R2 (blob.Driver)
   ├── HTTP router ──→ syumai/workers Serve() ──→ fetch handler
-  └── Hooks/auth ──→ unmodified pure Go (all synchronous)
-
-## Why this works (researched against PocketBase v0.36.9)
-
-### DB layer: zero PocketBase source changes
-
-PocketBase ships the mechanism we need:
-- `core/db_connect.go` — `//go:build !no_default_driver` — imports `modernc.org/sqlite`
-- `core/db_connect_nodefaultdriver.go` — `//go:build no_default_driver` — panic stub
-- `core/base.go:209` — `if app.config.DBConnect == nil { app.config.DBConnect = DefaultDBConnect }`
-
-Build with `-tags no_default_driver`. Set `config.DBConnect` to our D1-backed function.
-The sqlite driver is never imported. `DefaultDBConnect` is never called.
-
-Our `DBConnect` maps PocketBase file paths to D1 binding names:
-- `data.db` → `APP_DB`
-- `auxiliary.db` → `LOGS_DB`
-
-The D1 driver (`syumai/workers/cloudflare/d1`) is a complete `database/sql/driver`
-implementation. dbx integration requires one line: `BuilderFuncMap["d1"] = NewSqliteBuilder`.
-
-### Transactions: immediate execution, no-op Begin/Commit/Rollback
-
-The D1 driver does not implement `driver.Tx`. D1 auto-commits every statement.
-D1's `batch()` API provides atomic multi-statement execution but cannot implement
-the interactive `database/sql/driver.Tx` interface (which requires per-statement
-results before commit).
-
-This is acceptable because:
-
-1. **Single-record CRUD does not use transactions.** PocketBase's `Save()`,
-   `Delete()`, `Create()` execute a single SQL statement. No `RunInTransaction`.
-
-2. **Multi-statement operations that use transactions are idempotent:**
-   - `cascadeRecordDelete` — SELECT records in batches, DELETE each batch
-   - `auth_origin_model.go` hooks — FindAllRecords + loop Delete
-   - Both are retry-safe: if the handler crashes mid-sequence, retry finds
-     remaining records and continues
-
-3. **Schema operations move to wrangler:**
-   - `collection_record_table_sync.go` — move to `wrangler d1 execute`
-   - `migrations_runner.go` — move to `wrangler d1 execute`
-   - Schema changes are control-plane, not request-path
-
-4. **Log batch writer** — replace with Workers Logs, no auxiliary DB needed
-
-Our Tx implementation: `Begin()` returns a wrapper. `Exec()`/`Query()` execute
-immediately. `Commit()`/`Rollback()` are no-ops. Each write auto-commits. D1
-serializes all writes through a single SQLite primary — concurrent Workers
-invocations cannot interleave.
-
-### HTTP: direct
-
-`workers.Serve()` accepts `http.Handler`. `apis.NewRouter(pb).BuildMux()` returns
-`http.Handler`. No adapter needed.
-
-### Hooks: all synchronous
-
-Every PocketBase hook executes inline during request processing. The HTTP response
-is written in the LAST handler of the hook chain. All hooks complete before
-`ServeHTTP()` returns. WASM instance is destroyed after response body finishes
-streaming — hooks are done by then. Confirmed by source audit: exactly 2 `go func()`
-in the entire codebase (log writer ticker, batch API endpoint), neither hook-related.
-
-### ATTACH DATABASE: not used
-
-PocketBase does not use SQL `ATTACH DATABASE`. The auxiliary database is a
-completely separate `*sql.DB` connection. Our `DBConnect` routes it to `LOGS_DB`.
-Zero cross-DB queries exist.
-
-### Filesystem: R2 adapter
-
-Implement `blob.Driver` (19 methods). R2 is strongly consistent for read-after-write.
-`Copy` falls back to Get+Put. Mechanical, no unknowns.
-
-### Binary size
-
-- `-tags no_default_driver` strips `modernc.org/sqlite` from the import graph
-- JSVM plugin disabled (no `goja` import)
-- `core/syscall_wasm.go` already exists in PocketBase (`//go:build js && wasm`)
-- `-ldflags="-s -w"` strips DWARF and symbol table
-- `wasm-opt -Oz` for further reduction
-
-## What needs PocketBase source patches
-
-~40 lines total, all build-tag-gated with `//go:build js && wasm`:
-
-| Patch | File | Change |
-|-------|------|--------|
-| Bootstrap WASM | `core/base.go` | Extract `os.MkdirAll`/`os.RemoveAll` into `prepareDataDir()`, fsnotify into `registerNotifyWatcherHooks()` |
-| Bootstrap WASM | `core/base_wasm.go` (new) | `prepareDataDir()` no-op, `registerNotifyWatcherHooks()` no-op |
-| Filesystem WASM | `core/base_filesystem_wasm.go` (new) | `NewFilesystem()` returns R2-backed system, `NewBackupsFilesystem()` returns R2-backed system |
-
-No changes needed for DB connection — handled entirely via `no_default_driver` build tag + `config.DBConnect` injection.
+  └── Hooks/auth ──→ unmodified pure Go
+```
 
 ## Project structure
 
 ```
 pocketflare/
-├── go.mod
-├── go.sum
-├── Makefile
-├── wrangler.toml
+├── go.mod, go.sum, Makefile, wrangler.toml, package.json
 ├── OVERVIEW.md
 │
-├── cmd/pocketflare/
-│   └── main.go                  # Entry point (js/wasm build tag)
-│
 ├── adapter/
-│   ├── app.go                   # PocketBase bootstrap + router build
-│   ├── r2blob/
-│   │   └── r2blob.go            # blob.Driver impl backed by R2
-│   └── wasmdb/
-│       └── db.go                # D1-backed DBConnect function
+│   ├── app_wasm.go / app_native.go  # Bootstrap + superuser creation
+│   ├── wasmdb/db.go                 # D1 DBConnect
+│   ├── wasmdb/driver.go             # No-op Tx wrapper
+│   └── r2blob/r2blob.go             # R2 blob.Driver
 │
-├── internal/pocketbase/         # PocketBase source (script-managed)
-│   └── ...                      # Full PocketBase tree + patches applied
+├── cmd/pocketflare/
+│   ├── main_wasm.go                 # workers.Serve() entry point
+│   └── main_native.go               # http.ListenAndServe() for dev
 │
 ├── patches/
-│   ├── 001-bootstrap-wasm.patch
-│   └── 002-filesystem-wasm.patch
+│   ├── 001-bootstrap-wasm.patch     # OS ops extraction
+│   ├── 002-filesystem-wasm.patch    # R2 filesystem injection
+│   ├── 003-nil-body-fix.patch       # Nil body guard for Workers
+│   └── 004-filesystem-newblob.patch # NewBlob constructor
 │
 ├── scripts/
-│   ├── update-pb.sh             # Fetch upstream + apply patches
-│   └── build.sh                 # WASM compilation + workers-assets-gen
+│   ├── update-pb.sh                 # Fetch PocketBase + apply patches
+│   ├── migrate-data.sh              # SQLite → D1 data export
+│   └── migrate-files.sh             # pb_data/storage → R2 uploads
 │
-└── dist/                        # Build artifacts (gitignored)
-    ├── app.wasm
-    ├── worker.mjs
-    ├── wasm_exec.js
-    └── runtime.mjs
+├── testapp/                         # Example migrated app
+│   ├── main.go                      # Custom migration + hook
+│   └── go.mod
+│
+├── worker.mjs, runtime.mjs          # JS glue for Workers
+│   wasm_exec.js                     # syumai/workers modified runtime
+│
+└── dist/                            # Build artifacts (gitignored)
 ```
 
-## wrangler.toml
+## Migrating an existing PocketBase app
 
-```toml
-name = "pocketflare"
-main = "dist/worker.mjs"
-compatibility_date = "2025-05-30"
+### main.go transformation
 
-[[d1_databases]]
-binding = "APP_DB"
-database_name = "pocketflare-app"
-
-[[d1_databases]]
-binding = "LOGS_DB"
-database_name = "pocketflare-logs"
-
-[[r2_buckets]]
-binding = "STORAGE"
-bucket_name = "pocketflare-storage"
-
-[[r2_buckets]]
-binding = "BACKUPS"
-bucket_name = "pocketflare-backups"
-
-[wasm_modules]
-app = "dist/app.wasm"
+**Before:**
+```go
+app := pocketbase.New()
+app.OnRecordCreate("posts").BindFunc(myHook)
+app.Start()
 ```
+
+**After:**
+```go
+pb, router, _ := adapter.New(adapter.Config{
+    AppName:       "myapp",
+    AppURL:        "https://myapp.workers.dev",
+    DataDir:       "/tmp/pb_data",
+    AdminEmail:    "admin@example.com",
+    AdminPassword: "changeme123",
+    AppMigrations: appMigrations(),
+})
+pb.OnRecordCreate("posts").BindFunc(myHook) // identical API
+handler, _ := router.BuildMux()
+workers.Serve(handler) // replaces app.Start()
+```
+
+### Go migrations
+
+Embed `pb_migrations/*.go` and pass to `AppMigrations`:
+
+```go
+func appMigrations() core.MigrationsList {
+    //go:embed pb_migrations
+    var migrationsFS embed.FS
+    migrations, _ := core.NewMigrationsList(migrationsFS)
+    return migrations
+}
+```
+
+### Data migration
+
+```bash
+./scripts/migrate-data.sh ./pb_data/data.db > migration.sql
+wrangler d1 execute APP_DB --remote --file=migration.sql
+```
+
+### File migration
+
+```bash
+./scripts/migrate-files.sh ./pb_data/storage/ --execute
+```
+
+### Cloudflare resources
+
+```bash
+wrangler d1 create myapp-db
+wrangler d1 create myapp-logs
+wrangler r2 bucket create myapp-storage
+wrangler r2 bucket create myapp-backups
+# Fill returned IDs into wrangler.toml
+```
+
+## Limitations
+
+| Feature | Status | Notes |
+|---|---|---|
+| CRUD (collections, records) | Works | Full REST API |
+| Auth (superusers, users, JWT) | Works | Registration, login, refresh, scoping |
+| File upload/download | Works | R2-backed, multipart upload |
+| Image thumbnails | Works | `disintegration/imaging` compiled in |
+| Go migrations | Works | No-op Tx wrapper; schema migrations safe |
+| Custom hooks | Works | Identical API to PocketBase |
+| Realtime/SSE | Deferred | Durable Objects broker (Phase 4) |
+| In-process cron | Deferred | Workers Cron Triggers (Phase 4) |
+| Admin UI | Partial | `/_{path...}` route served, untested |
+| Sending email | Deferred | Workers TCP Sockets (Phase 4) |
 
 ## Build
 
 ```bash
-GOOS=js GOARCH=wasm go build -tags no_default_driver -trimpath -ldflags="-s -w" -o dist/app.wasm ./cmd/pocketflare
+make build
+# Builds dist/app.wasm (8.6MB gzipped) + JS glue
 ```
 
-## Features deferred to later phases
+## Patches (against PocketBase v0.36.9)
 
-- **Realtime/SSE** — Durable Objects broker (Phase 4)
-- **Cron** — Workers Cron Triggers instead of PocketBase in-process cron (Phase 4)
-- **Email** — Workers TCP Sockets or fetch-based mail API (Phase 4)
-- **Admin UI** — Separate static host or omitted for size (Phase 5)
-- **JSVM plugin** — Disabled (goja excluded from WASM build)
+| # | File | Change |
+|---|------|--------|
+| 001 | `core/base.go` + new files | Extract OS ops to `prepareDataDir()`/`registerNotifyWatcherHooks()` |
+| 002 | `core/base_filesystem_wasm.go` (new) | Inject R2 filesystem via function variables |
+| 003 | `tools/router/rereadable_read_closer.go` | Nil guard on `ReadCloser` for GET requests |
+| 004 | `tools/filesystem/filesystem.go` | `NewBlob()` constructor for arbitrary blob.Driver |
