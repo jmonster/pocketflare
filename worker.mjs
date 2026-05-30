@@ -79,8 +79,9 @@ async function fetch(req, env, ctx) {
     const response = await binding.handleRequest(req);
     return response;
   } catch (e) {
+    console.error({ message: e.message, stack: e.stack, cause: e.cause });
     return new Response(
-      `pocketflare error: ${e.message}\n\n${e.stack || ''}`,
+      'Internal Server Error',
       { status: 500, headers: { 'Content-Type': 'text/plain' } }
     );
   }
