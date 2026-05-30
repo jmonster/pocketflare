@@ -33,8 +33,14 @@ Runtime env vars:
 - `POCKETFLARE_APP_URL`: optional default app URL for new databases only.
 - `POCKETFLARE_ADMIN_EMAIL`: optional headless initial superuser email.
 - `POCKETFLARE_ADMIN_PASSWORD`: optional headless initial superuser password.
-- `POCKETFLARE_MAIL_WEBHOOK_URL`: optional HTTPS mail webhook.
+- `POCKETFLARE_MAIL_PROVIDER`: optional mail transport (resend|postmark|sendgrid|mailgun|smtp|webhook).
+- `POCKETFLARE_MAIL_API_KEY`: optional API key for HTTP mail providers.
+- `POCKETFLARE_MAIL_DOMAIN`: optional Mailgun sending domain.
+- `POCKETFLARE_MAIL_WEBHOOK_URL`: optional HTTPS mail webhook (legacy).
 - `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token for the mail webhook.
+- `R2_ACCESS_KEY_ID`: optional R2 API token access key for server-side CopyObject.
+- `R2_SECRET_ACCESS_KEY`: optional R2 API token secret for server-side CopyObject.
+- `R2_ACCOUNT_ID`: optional Cloudflare account ID for server-side CopyObject.
 
 `adapter.New` applies `POCKETFLARE_APP_URL` and trusted proxy header defaults before `Bootstrap()`. PocketBase persists those only when no `_params/settings` row exists, so migrated and already-deployed projects keep their stored settings. New databases default `TrustedProxy.Headers` to `["CF-Connecting-IP"]`.
 
@@ -48,7 +54,7 @@ Known caveat: backup restore still has one upstream branch that checks `Settings
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 
-Current `adapter/r2blob` writes and copies are memory-buffered. Prefer a bounded-memory rewrite using R2 multipart upload for writes and R2 S3 `CopyObject`/`UploadPartCopy` for copies.
+`adapter/r2blob` writes use R2 multipart upload (bounded ~10 MB Go memory). Copies use server-side S3 CopyObject when `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID` are set; otherwise they stream via FixedLengthStream (no Go buffering).
 
 Migration docs for local and existing S3-backed PocketBase storage live in `docs/storage-migration.md`. Pocketflare expects R2 object keys under `storage/<collectionId>/<recordId>/<filename>`.
 
@@ -96,4 +102,12 @@ Do not run broad suites unless requested. Do not rerun failures without diagnosi
 
 ## Email
 
-PocketBase SMTP email does not work as-is in Pocketflare. Upstream PocketBase uses Go `net/smtp`; this project has no bridge from Go WASM to Cloudflare's JS `cloudflare:sockets` API. Current supported path is `adapter/webmailer`, which posts mail payloads to `POCKETFLARE_MAIL_WEBHOOK_URL`. See `docs/email-implementation.md` before attempting SMTP-over-sockets.
+PocketBase's built-in SMTP client uses Go `net/smtp`, which is non-functional in Go WASM on Cloudflare Workers. Pocketflare replaces it with `adapter/mail`, which provides three transport modes:
+
+1. **HTTP provider** (`POCKETFLARE_MAIL_PROVIDER`): resend, postmark, sendgrid, mailgun — talks directly to each provider's HTTP API.
+2. **Generic webhook** (`POCKETFLARE_MAIL_WEBHOOK_URL`): legacy path — posts JSON payloads to any HTTPS endpoint.
+3. **SMTP via Workers sockets**: when neither of the above is set, reads PocketBase admin SMTP settings at send time and delivers through `cloudflare:sockets` (JS module `smtp-transport.mjs`).
+
+Provider selection priority is: `MAIL_PROVIDER` > `MAIL_WEBHOOK_URL` > PocketBase SMTP settings. The SMTP transport supports ports 465 (implicit TLS) and 587 (STARTTLS). Port 25 is blocked.
+
+Env vars: `POCKETFLARE_MAIL_PROVIDER`, `POCKETFLARE_MAIL_API_KEY`, `POCKETFLARE_MAIL_DOMAIN` (Mailgun only), plus legacy `POCKETFLARE_MAIL_WEBHOOK_URL` / `POCKETFLARE_MAIL_WEBHOOK_TOKEN`.

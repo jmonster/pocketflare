@@ -77,7 +77,7 @@ Do not enable PocketBase S3 for normal Pocketflare file fields. In the Workers b
 
 Standard PocketBase file uploads and downloads are still mediated by the PocketBase API. Direct browser-to-R2 uploads and signed R2 download redirects are possible future Pocketflare features, not effects of enabling PocketBase S3.
 
-Current R2 writes and copies are memory-buffered in Go. The robust fix is to replace those paths with R2 multipart uploads and server-side S3 `CopyObject`/`UploadPartCopy`.
+R2 writes use multipart uploads (bounded ~10 MB Go memory per upload). Copies use server-side S3 CopyObject when R2 API credentials are configured, or stream through the Worker with bounded memory when they are not. See the commented `R2_ACCOUNT_ID` and secrets in `wrangler.toml` to enable server-side copies.
 
 ## Migrate Existing PocketBase
 
@@ -112,7 +112,7 @@ The data export includes `_params/settings`, so migrated app URL and trusted pro
 ## Current Limits
 
 - D1 cannot provide SQLite-equivalent multi-statement rollback through `database/sql`; each statement commits independently.
-- R2 writes and copies currently buffer full objects in memory.
+- R2 writes stream via multipart upload; copies use server-side CopyObject (opt-in) or streaming fallback.
 - Realtime/SSE and PocketBase cron are not implemented.
 - PocketBase SMTP email does not work as-is in Pocketflare; use an HTTP mail provider hook until a Worker sockets mailer exists.
 - Backup restore still needs a cleanup pass to remove the last dependency on PocketBase backup S3 settings.

@@ -8,6 +8,11 @@ Pocketflare runs PocketBase on Cloudflare Workers by compiling PocketBase to Go 
 Browser
   ├─ /_/* static admin files
   │    └─ Cloudflare Workers Assets binding: ASSETS -> admin-ui/_
+  ├─ /api/realtime (GET)
+  │    └─ worker.mjs routes to Durable Object (RealtimeDO)
+  │         ├─ SSE stream (TransformStream)
+  │         ├─ /__send (message delivery from Go)
+  │         └─ /__subscribe (subscription metadata)
   └─ /api/* and other dynamic routes
        └─ worker.mjs
             └─ singleton Go WASM runtime per isolate
@@ -15,7 +20,8 @@ Browser
                       └─ adapter.New()
                            ├─ PocketBase router
                            ├─ D1 APP_DB / LOGS_DB
-                           └─ R2 STORAGE / BACKUPS
+                           ├─ R2 STORAGE / BACKUPS
+                           └─ adapter/realtime.go (DO bridge)
 ```
 
 `worker.mjs` keeps one Go runtime per isolate. This is intentional: browser admin pages load many files in parallel, and creating one Go WASM runtime per request can exceed the Worker memory limit.
@@ -31,13 +37,15 @@ Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, n
 | `adapter/wasmdb/` | D1 `database/sql` driver wrapper and DB binding routing. |
 | `adapter/r2blob/` | `blob.Driver` implementation backed by Cloudflare R2 bindings. |
 | `admin-ui/_/` | PocketBase admin UI static assets served by Workers Assets. |
-| `worker.mjs` | Worker fetch/scheduled handlers and singleton WASM runtime management. |
+| `worker.mjs` | Worker fetch/scheduled handlers, singleton WASM runtime management, and realtime DO routing. |
+| `realtime-do.mjs` | Durable Object class that holds SSE connections open and delivers messages from Go to clients. |
 | `runtime.mjs` | WASM module loader and Workers runtime context bridge. |
+| `adapter/realtime.go` | DO-based realtime bridge: `DOClient` wraps PocketBase's `DefaultClient` so subscription matching stays in Go while message delivery goes through the DO. |
 | `patches/` | Patch set applied to upstream PocketBase by `scripts/update-pb.sh`. |
 | `scripts/scaffold-project.sh` | Prompts and creates a new Pocketflare project. |
 | `scripts/migrate-data.sh` | Exports PocketBase SQLite `data.db` to SQL for D1 import. |
 | `scripts/migrate-files.sh` | Uploads `pb_data/storage` files to the R2 `STORAGE` bucket. |
-| `wrangler.toml` | Worker name, app URL var, D1 bindings, R2 bindings, and Workers Assets binding. |
+| `wrangler.toml` | Worker name, app URL var, D1/R2 bindings, Durable Object bindings, Workers Cron Triggers, and Assets binding. |
 
 ## Cloudflare Resources
 
@@ -47,6 +55,9 @@ Required bindings:
 - `STORAGE`: R2 bucket for PocketBase file fields.
 - `BACKUPS`: R2 bucket for PocketBase backups.
 - `ASSETS`: Workers Assets binding for `admin-ui/`.
+- `REALTIME_DO`: Durable Object for SSE connections (class `RealtimeDO`).
+
+A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives PocketBase's cron scheduler.
 
 `STORAGE` and `BACKUPS` are used directly by the patched WASM filesystem path. Users do not need to enable PocketBase's S3 file-storage feature for normal file fields. One backup-restore branch still consults PocketBase's backup S3 setting; backup restore needs follow-up before claiming full S3 independence.
 
@@ -89,7 +100,7 @@ Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selec
 
 The standard PocketBase file API still proxies uploads and downloads through PocketBase. Upstream S3 mode does not make normal file-field uploads direct-to-S3. Direct browser-to-R2 uploads, signed R2 download redirects, or a public R2 custom domain would require explicit Pocketflare routes that preserve PocketBase access rules.
 
-Current adapter copies and writes are memory-buffered. The better implementation path is R2 multipart upload for writes and R2 S3 `CopyObject`/`UploadPartCopy` for server-side copies.
+Writes use R2 multipart uploads (bounded ~10 MB Go memory per upload). Copies use server-side S3 CopyObject when R2 API credentials are configured (see `wrangler.toml`), with a FixedLengthStream fallback that also avoids Go-side buffering.
 
 ## Migrating Existing PocketBase Projects
 
@@ -153,9 +164,9 @@ Current adapter copies and writes are memory-buffered. The better implementation
 ## Known Limits
 
 - D1 has no multi-statement transaction boundary for separate `database/sql` calls. Rollback is a no-op; partial writes can remain after multi-step failures.
-- R2 writes and copies are memory-buffered in Go. Large files can exceed Workers memory limits.
-- Realtime/SSE is not implemented; it needs a Durable Objects broker or another fan-out design.
-- In-process PocketBase cron is not integrated with Workers Cron Triggers yet.
+- R2 writes use multipart upload (bounded ~10 MB Go memory). Copies use server-side S3 CopyObject (opt-in; see `wrangler.toml`) or a streaming fallback.
+- Realtime/SSE is implemented via a Durable Object (`RealtimeDO`) that holds SSE connections open. PocketBase handles auth and subscription matching in Go; the DO handles transport. `GET /api/realtime` is intercepted by `worker.mjs` and routed to the DO; `POST /api/realtime` (subscriptions) still goes through Go.
+- PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
 - PocketBase SMTP email does not work as-is; the current code uses Go `net/smtp` and has no Worker sockets bridge. Use an HTTP mail provider hook until a Workers-compatible mailer exists.
 - Backup restore is not fully decoupled from PocketBase backup S3 settings.
 
@@ -163,5 +174,7 @@ Current adapter copies and writes are memory-buffered. The better implementation
 
 - Cloudflare Workers Static Assets: https://developers.cloudflare.com/workers/static-assets/
 - Workers Assets binding: https://developers.cloudflare.com/workers/static-assets/binding/
+- Durable Objects: https://developers.cloudflare.com/durable-objects/
+- Workers Cron Triggers: https://developers.cloudflare.com/workers/configuration/cron-triggers/
 - D1 Wrangler commands: https://developers.cloudflare.com/d1/wrangler-commands/
 - R2 Wrangler commands: https://developers.cloudflare.com/r2/reference/wrangler-commands/
