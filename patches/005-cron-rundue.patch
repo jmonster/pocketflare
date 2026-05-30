@@ -1,0 +1,31 @@
+From 348b12f5613b7cd90ea2704ed77f7adb1a49a124 Mon Sep 17 00:00:00 2001
+From: Johnny D <goforjohnny@icloud.com>
+Date: Sat, 30 May 2026 12:00:00 -0400
+Subject: [PATCH 5/6] feat: export RunDue() on cron.Cron for external trigger
+ integrations
+
+Add public RunDue() method so Workers Cron Triggers can drive PocketBase's
+cron scheduler without starting the in-process time.Ticker (which can't
+run reliably in WASM on Cloudflare Workers).
+---
+ tools/cron/cron.go | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/tools/cron/cron.go b/tools/cron/cron.go
+index 66dd07c..898e889 100644
+--- a/tools/cron/cron.go
++++ b/tools/cron/cron.go
+@@ -213,6 +213,13 @@ func (c *Cron) HasStarted() bool {
+ 	return c.ticker != nil
+ }
+
++// RunDue runs all registered jobs that are scheduled for the provided time.
++//
++// Exposed for external cron trigger integrations (e.g. Cloudflare Workers Cron Triggers).
++func (c *Cron) RunDue(t time.Time) {
++	c.runDue(t)
++}
++
+ // runDue runs all registered jobs that are scheduled for the provided time.
+ func (c *Cron) runDue(t time.Time) {
+ 	c.mux.RLock()
