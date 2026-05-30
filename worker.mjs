@@ -3,36 +3,44 @@ import { createRuntimeContext, loadModule } from "./runtime.mjs";
 import { RealtimeDO } from "./realtime-do.mjs";
 import { registerSmtpTransport } from "./smtp-transport.mjs";
 
-async function run(ctx) {
-  console.log({ family: "pocketflare-runtime", phase: "smtp-register" });
+async function run(ctx, metrics) {
+  metrics.smtpRegisterStart = performance.now();
+  console.log({ family: "pocketflare-runtime", phase: "smtp-register", bootId: metrics.bootId });
   try {
     registerSmtpTransport();
   } catch (_) {
     // SMTP transport unavailable — non-SMTP deployments are unaffected.
     // Go will report a clear error at send time if SMTP is configured.
   }
+  metrics.smtpRegisterDone = performance.now();
 
   const go = new Go();
-  console.log({ family: "pocketflare-runtime", phase: "wasm-load-start" });
+  metrics.wasmLoadStart = performance.now();
+  console.log({ family: "pocketflare-runtime", phase: "wasm-load-start", bootId: metrics.bootId });
   const mod = await loadModule();
-  console.log({ family: "pocketflare-runtime", phase: "wasm-load-done" });
+  metrics.wasmLoadDone = performance.now();
+  console.log({ family: "pocketflare-runtime", phase: "wasm-load-done", bootId: metrics.bootId });
 
   let ready;
   const readyPromise = new Promise((resolve) => {
     ready = resolve;
   });
 
+  metrics.wasmInstantiateStart = performance.now();
   const instance = new WebAssembly.Instance(mod, {
     ...go.importObject,
     workers: {
       ready: () => {
-        console.log({ family: "pocketflare-runtime", phase: "go-ready" });
+        metrics.goReady = performance.now();
+        console.log({ family: "pocketflare-runtime", phase: "go-ready", bootId: metrics.bootId });
         ready();
       },
     },
   });
+  metrics.wasmInstantiateDone = performance.now();
 
-  console.log({ family: "pocketflare-runtime", phase: "go-run-start" });
+  metrics.goRunStart = performance.now();
+  console.log({ family: "pocketflare-runtime", phase: "go-run-start", bootId: metrics.bootId });
   const goPromise = go.run(instance, ctx);
   await Promise.race([
     readyPromise,
@@ -45,26 +53,38 @@ async function run(ctx) {
       },
     ),
   ]);
+  metrics.ready = performance.now();
 }
 
 // Keep one Go/PocketBase runtime per isolate. Booting per request lets browser
 // fan-out instantiate multiple ~39 MB WASM heaps inside the same 128 MB isolate.
 let runtimePromise;
 let runtimeContext;
+let runtimeReady = false;
+let runtimeBootSeq = 0;
+let runtimeMetrics;
 
 async function getBinding(env, ctx) {
   if (runtimePromise === undefined) {
-    console.log({ family: "pocketflare-runtime", phase: "init-start" });
+    runtimeReady = false;
+    runtimeMetrics = {
+      bootId: ++runtimeBootSeq,
+      initStart: performance.now(),
+    };
+    console.log({ family: "pocketflare-runtime", phase: "init-start", bootId: runtimeMetrics.bootId });
     runtimeContext = createRuntimeContext({ env, ctx, binding: {} });
-    runtimePromise = run(runtimeContext)
+    runtimePromise = run(runtimeContext, runtimeMetrics)
       .then(() => {
-        console.log({ family: "pocketflare-runtime", phase: "init-ready" });
+        runtimeReady = true;
+        runtimeMetrics.initReady = performance.now();
+        console.log({ family: "pocketflare-runtime", phase: "init-ready", bootId: runtimeMetrics.bootId });
         return runtimeContext.binding;
       })
       .catch((err) => {
-        console.error({ family: "pocketflare-runtime", phase: "init-error", message: err.message, stack: err.stack });
+        console.error({ family: "pocketflare-runtime", phase: "init-error", bootId: runtimeMetrics?.bootId, message: err.message, stack: err.stack });
         runtimePromise = undefined;
         runtimeContext = undefined;
+        runtimeReady = false;
         throw err;
       });
   } else {
@@ -75,10 +95,24 @@ async function getBinding(env, ctx) {
   return runtimePromise;
 }
 
+function runtimeStateForRequest() {
+  if (runtimePromise === undefined) return "cold";
+  if (!runtimeReady) return "boot_wait";
+  return "warm";
+}
+
 async function fetch(req, env, ctx) {
+  const fetchStart = performance.now();
   const url = new URL(req.url);
   if (url.pathname === "/_" || url.pathname.startsWith("/_/")) {
-    return env.ASSETS.fetch(req);
+    const response = await env.ASSETS.fetch(req);
+    return withTimingHeaders(response, {
+      route: "assets",
+      serverTiming: [
+        ["pf_static", performance.now() - fetchStart],
+        ["pf_total", performance.now() - fetchStart],
+      ],
+    });
   }
 
   // Realtime SSE connections live in a Durable Object so they can hold
@@ -95,9 +129,38 @@ async function fetch(req, env, ctx) {
   }
 
   try {
+    const runtimeState = runtimeStateForRequest();
+    const runtimeWaitStart = performance.now();
     const binding = await getBinding(env, ctx);
+    const runtimeWaitDone = performance.now();
+    const handlerStart = performance.now();
     const response = await binding.handleRequest(req);
-    return response;
+    const handlerDone = performance.now();
+    const totalMs = handlerDone - fetchStart;
+    const serverTiming = [
+      ["pf_total", totalMs],
+      ["pf_runtime_wait", runtimeWaitDone - runtimeWaitStart],
+      ["pf_handler", handlerDone - handlerStart],
+    ];
+    if (runtimeState !== "warm" && runtimeMetrics) {
+      appendBootTimings(serverTiming, runtimeMetrics);
+    }
+    console.log({
+      family: "pocketflare-request",
+      method: req.method,
+      path: url.pathname,
+      runtime: runtimeState,
+      bootId: runtimeMetrics?.bootId,
+      totalMs: roundMs(totalMs),
+      runtimeWaitMs: roundMs(runtimeWaitDone - runtimeWaitStart),
+      handlerMs: roundMs(handlerDone - handlerStart),
+    });
+    return withTimingHeaders(response, {
+      route: "dynamic",
+      runtime: runtimeState,
+      bootId: runtimeMetrics?.bootId,
+      serverTiming,
+    });
   } catch (e) {
     console.error({ message: e.message, stack: e.stack, cause: e.cause });
     return new Response(
@@ -105,6 +168,40 @@ async function fetch(req, env, ctx) {
       { status: 500, headers: { 'Content-Type': 'text/plain' } }
     );
   }
+}
+
+function appendBootTimings(serverTiming, metrics) {
+  if (metrics.wasmLoadStart && metrics.wasmLoadDone) {
+    serverTiming.push(["pf_wasm_load", metrics.wasmLoadDone - metrics.wasmLoadStart]);
+  }
+  if (metrics.wasmInstantiateStart && metrics.wasmInstantiateDone) {
+    serverTiming.push(["pf_wasm_instantiate", metrics.wasmInstantiateDone - metrics.wasmInstantiateStart]);
+  }
+  if (metrics.goRunStart && metrics.goReady) {
+    serverTiming.push(["pf_go_ready", metrics.goReady - metrics.goRunStart]);
+  }
+  if (metrics.initStart && metrics.initReady) {
+    serverTiming.push(["pf_boot_total", metrics.initReady - metrics.initStart]);
+  }
+}
+
+function withTimingHeaders(response, { route, runtime, bootId, serverTiming }) {
+  const headers = new Headers(response.headers);
+  headers.set("X-Pocketflare-Route", route);
+  if (runtime) headers.set("X-Pocketflare-Runtime", runtime);
+  if (bootId !== undefined) headers.set("X-Pocketflare-Boot-Id", String(bootId));
+  if (serverTiming?.length) {
+    headers.set("Server-Timing", serverTiming.map(([name, value]) => `${name};dur=${roundMs(value)}`).join(", "));
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function roundMs(value) {
+  return Math.round(value * 100) / 100;
 }
 
 async function scheduled(event, env, ctx) {
