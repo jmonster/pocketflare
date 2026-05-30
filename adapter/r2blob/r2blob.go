@@ -371,13 +371,14 @@ func (d *Driver) streamingCopy(ctx context.Context, dstKey, srcKey string) error
 	}
 
 	body := v.Get("body")
-	size := v.Get("size")
 
 	// FixedLengthStream gives the ReadableStream a known length, satisfying
 	// put()'s requirement. Without this, R2 put would reject the body from
 	// get() with "readable stream must have a known length."
 	// Ref: https://github.com/cloudflare/workers-sdk/issues/6425
-	fls := js.Global().Get("FixedLengthStream").New(body, size)
+	sizeVal := v.Get("size").Int()
+	fls := js.Global().Get("FixedLengthStream").New(sizeVal)
+	body.Call("pipeTo", fls.Get("writable"))
 	readable := fls.Get("readable")
 
 	putOpts := copyPutOpts(v)
