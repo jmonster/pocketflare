@@ -1,0 +1,21 @@
+name = "pocketflare"
+main = "dist/worker.mjs"
+compatibility_date = "2025-05-30"
+
+[[d1_databases]]
+binding = "APP_DB"
+database_name = "pocketflare-app"
+database_id = "57bf4f7d-ff45-45b6-a110-b68877326067"
+
+[[d1_databases]]
+binding = "LOGS_DB"
+database_name = "pocketflare-logs"
+database_id = "ad0c39fe-356d-49b0-973a-7fa79028d3d5"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "pocketflare-storage"
+
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "pocketflare-backups"
