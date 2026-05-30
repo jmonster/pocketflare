@@ -133,18 +133,47 @@ wrangler r2 bucket create myapp-backups
 
 ## Limitations
 
+### Feature status
+
 | Feature | Status | Notes |
 |---|---|---|
 | CRUD (collections, records) | Works | Full REST API |
 | Auth (superusers, users, JWT) | Works | Registration, login, refresh, scoping |
 | File upload/download | Works | R2-backed, multipart upload |
 | Image thumbnails | Works | `disintegration/imaging` compiled in |
-| Go migrations | Works | No-op Tx wrapper; schema migrations safe |
+| Go migrations | Works | No-op Tx wrapper; each statement is atomic but cross-statement rollback not supported |
 | Custom hooks | Works | Identical API to PocketBase |
 | Realtime/SSE | Deferred | Durable Objects broker (Phase 4) |
 | In-process cron | Deferred | Workers Cron Triggers (Phase 4) |
 | Admin UI | Partial | `/_{path...}` route served, untested |
 | Sending email | Deferred | Workers TCP Sockets (Phase 4) |
+
+### Transaction model (important)
+
+Pocketflare runs on Cloudflare D1, which is fundamentally different from the SQLite that PocketBase normally uses. The most important difference is the **transaction model**.
+
+In standard PocketBase + SQLite:
+- `app.RunInTransaction(fn)` creates a real SQL transaction
+- All writes inside `fn` are invisible until the transaction commits
+- If `fn` returns an error, all writes are atomically rolled back
+- Multi-statement operations (save record + run hooks + write external auth) happen atomically or not at all
+
+On D1 (via Pocketflare):
+- Each individual SQL statement (`INSERT`, `UPDATE`, `DELETE`) is atomic on its own
+- **Multi-statement transactions spanning separate calls are not supported**
+- `RunInTransaction` still runs correctly — the callback executes — but `Commit` and `Rollback` are no-ops
+- Every write takes effect immediately, regardless of whether the wrapping "transaction" succeeds or fails
+
+**Why D1 works this way:** D1 is an HTTP-accessible stateless database. Every `prepare().run()` call is an independent operation. While D1 does have a `batch()` API for atomic multi-statement operations, it requires all statements upfront in a single call — incompatible with PocketBase's pattern of interleaving writes, reads, hooks, and callbacks within a transaction. D1's session API provides sequential consistency (you see your writes) but not transactional boundaries.
+
+**What this means for you:**
+- Normal CRUD operations are not affected — each Save() or Delete() generates a single atomic SQL statement
+- Schema migrations run one statement at a time; migration version tracking means failed migrations will retry
+- The deprecated `DrySubmit` validation path persists temp data even on "rollback" — harmless but untidy
+- If a collection import or batch API call fails partway, partial writes may remain — verify after failure
+- Custom hooks that write to multiple tables inside `RunInTransaction` will not get atomic rollback
+
+**This is a D1 platform constraint, not a Pocketflare bug.** No driver trick, session mode, or workaround can bridge this gap. It has been investigated thoroughly — see `adapter/wasmdb/driver.go` for the full technical analysis.
 
 ## Build
 
