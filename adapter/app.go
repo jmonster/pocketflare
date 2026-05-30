@@ -34,11 +34,19 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	})
 
 	// Wire R2-backed filesystem drivers before Bootstrap.
+	storageBucket := config.StorageBucketName
+	if storageBucket == "" {
+		storageBucket = "pocketflare-storage"
+	}
+	backupsBucket := config.BackupsBucketName
+	if backupsBucket == "" {
+		backupsBucket = "pocketflare-backups"
+	}
 	core.NewWasmFilesystem = func() (*filesystem.System, error) {
-		return filesystem.NewBlob(r2blob.New("STORAGE", "pocketflare-storage")), nil
+		return filesystem.NewBlob(r2blob.New("STORAGE", storageBucket)), nil
 	}
 	core.NewWasmBackupsFilesystem = func() (*filesystem.System, error) {
-		return filesystem.NewBlob(r2blob.New("BACKUPS", "pocketflare-backups")), nil
+		return filesystem.NewBlob(r2blob.New("BACKUPS", backupsBucket)), nil
 	}
 
 	applyNewInstallDefaults(pb, config)

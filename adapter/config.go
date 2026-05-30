@@ -27,4 +27,12 @@ type Config struct {
 
 	TrustedProxyHeaders []string
 	AppMigrations       core.MigrationsList
+
+	// StorageBucketName sets the R2 bucket name for app storage files.
+	// Defaults to "pocketflare-storage" if left empty.
+	StorageBucketName string
+
+	// BackupsBucketName sets the R2 bucket name for backup files.
+	// Defaults to "pocketflare-backups" if left empty.
+	BackupsBucketName string
 }
