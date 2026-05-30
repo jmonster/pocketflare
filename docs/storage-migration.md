@@ -74,6 +74,18 @@ WRANGLER_R2_BUCKET=<storage-bucket> \
   ./scripts/migrate-files.sh /path/to/export-root --no-storage-prefix --execute
 ```
 
+## Upload, Copy, And CopyObject
+
+Migration does not use Pocketflare's runtime `Copy` path. Local migration uploads use `scripts/migrate-files.sh`; S3-backed migration should use `rclone`, `aws s3 sync`, or another S3-compatible copy tool to place objects in R2.
+
+Runtime terms:
+
+- Upload: a PocketBase client sends a file to the PocketBase API, then Pocketflare writes it to R2. The current writer is a chunked R2 multipart writer. It buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
+- Download: PocketBase serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
+- Copy: PocketBase's filesystem `Copy(src, dst)` method duplicates an existing stored object. Normal upload, download, local migration, and S3-to-R2 import do not call this path.
+
+S3 `CopyObject` is only an optimization for runtime filesystem Copy. When optional R2 API credentials are configured, Pocketflare can ask R2 to copy the object server-side so bytes do not pass through the Worker. Without those credentials, the intended fallback relays the source object body to a new R2 object through the Worker. That fallback needs runtime proof before relying on it for large objects.
+
 ## Backups
 
 Pocketflare has a separate R2 `BACKUPS` bucket. Existing PocketBase backup archives are optional migration data. If you need them, copy backup zip files into the `BACKUPS` bucket with their original file names.

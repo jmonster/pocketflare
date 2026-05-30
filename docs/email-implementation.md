@@ -1,23 +1,64 @@
 # Email Implementation
 
-## Current State (updated 2026-05-30)
+## Current State
 
-All three transport modes are implemented in `adapter/mail/`:
+Pocketflare does not use PocketBase's Go `net/smtp` transport in the Workers build. Go WASM cannot dial SMTP directly on Cloudflare Workers; outbound TCP is exposed through JavaScript `cloudflare:sockets`.
 
-1. **HTTP providers** — Resend, Postmark, SendGrid, Mailgun (`POCKETFLARE_MAIL_PROVIDER` + `POCKETFLARE_MAIL_API_KEY`).
-2. **Generic webhook** — legacy path (`POCKETFLARE_MAIL_WEBHOOK_URL`).
-3. **SMTP** — `cloudflare:sockets` via `smtp-transport.mjs`, supporting implicit TLS (465) and STARTTLS (587). Reads PocketBase admin SMTP settings at send time so admin UI changes take effect without re-deploy.
+`adapter/mail/` provides three transport families:
 
-See `adapter/mail/payload.go` for the shared JSON payload format used by webhook and HTTP providers.
+1. HTTP providers: Resend, Postmark, SendGrid, and Mailgun.
+2. Generic webhook: sends the normalized PocketBase message payload to an HTTPS endpoint.
+3. SMTP through Workers sockets: JavaScript transport in `smtp-transport.mjs`, called from Go.
 
-## Original Design Doc
+Provider selection priority:
 
-The sections below describe the original design and provider-specific API shapes.
+1. `POCKETFLARE_MAIL_PROVIDER`
+2. `POCKETFLARE_MAIL_WEBHOOK_URL`
+3. PocketBase admin SMTP settings
 
-- `POCKETFLARE_MAIL_WEBHOOK_URL`: required to enable the webhook mailer.
-- `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token.
-- Implementation: `adapter/webmailer`.
-- Registration: `adapter.New` replaces `e.Mailer` in `OnMailerSend`.
+Use HTTP providers or the webhook for production until SMTP sockets are proven against the target provider.
+
+## HTTP Providers
+
+Set:
+
+```toml
+[vars]
+POCKETFLARE_MAIL_PROVIDER = "resend"
+```
+
+Then store the provider key as a Worker secret:
+
+```sh
+pnpm exec wrangler secret put POCKETFLARE_MAIL_API_KEY
+```
+
+Supported `POCKETFLARE_MAIL_PROVIDER` values:
+
+- `resend`
+- `postmark`
+- `sendgrid`
+- `mailgun`
+- `webhook`
+- `smtp`
+
+Mailgun also needs:
+
+```toml
+[vars]
+POCKETFLARE_MAIL_DOMAIN = "mg.example.com"
+```
+
+## Webhook
+
+The webhook path is useful when mail delivery should stay behind a separate service.
+
+```sh
+pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_URL
+pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_TOKEN
+```
+
+`POCKETFLARE_MAIL_WEBHOOK_TOKEN` is optional. When set, Pocketflare sends it as `Authorization: Bearer <token>`.
 
 Payload shape:
 
@@ -44,67 +85,30 @@ Payload shape:
 
 Attachments are capped at 10 MiB each to avoid turning email into another Worker memory hazard.
 
-## Why SMTP Needs Its Own Work
+## SMTP
 
-Cloudflare Workers support outbound TCP through JavaScript `cloudflare:sockets`, including TLS and StartTLS patterns needed by SMTP on ports 465 and 587. Workers prohibit outbound port 25.
+SMTP support is a Workers-sockets transport, not PocketBase's original `net/smtp` path.
 
-PocketBase does not use that API. It uses Go `net/smtp` through `tools/mailer.SMTPClient`. In Go WASM on Workers, `net/smtp` does not automatically map to `cloudflare:sockets`. Changing the recommended SMTP port in settings will not fix delivery.
+Expected constraints:
 
-Treat SMTP-over-Workers-sockets as a separate implementation, not a docs tweak.
+- Port 465 uses implicit TLS.
+- Port 587 requires STARTTLS.
+- Port 25 is blocked by Cloudflare Workers and should fail with a clear configuration error.
+- SMTP settings are read from PocketBase admin settings at send time when no HTTP provider or webhook is configured.
 
-## Track 1: Production HTTP Mail Providers (IMPLEMENTED)
+Current caution: the SMTP code compiles, but it needs live-provider proof before being documented as production-ready. STARTTLS on port 587 is especially suspect until the transport is verified to upgrade the `cloudflare:sockets` connection correctly.
 
-Supports: resend, postmark, sendgrid, mailgun, webhook. Factory in `adapter/mail/factory.go`.
+## Validation Needed
 
-Suggested first providers:
-- Resend
-- Postmark
-- SendGrid
-- Mailgun HTTP API
+Minimum proof before promoting SMTP:
 
-Design:
-- Add `adapter/webmailer` provider modes, not ad hoc app hooks.
-- Env vars:
-  - `POCKETFLARE_MAIL_PROVIDER=resend|postmark|sendgrid|mailgun|webhook`
-  - `POCKETFLARE_MAIL_API_KEY`
-  - provider-specific non-secret defaults in `wrangler.toml` only when they are not credentials.
-- Keep the current generic webhook mode as the fallback/escape hatch.
-- Preserve PocketBase `OnMailerSend` customization. The adapter should only replace the final transport.
-- Keep payload conversion in one shared internal representation.
+1. Send a real password-reset email through PocketBase on port 465.
+2. Send a real password-reset email through PocketBase on port 587.
+3. Confirm port 25 returns a deterministic configuration error.
+4. Confirm admin SMTP setting changes take effect without redeploy.
 
-Validation:
-- Unit-test payload conversion with in-memory `mailer.Message`.
-- Run `make build`.
-- Use `wrangler dev` or a deploy target with a controlled webhook endpoint and send a password-reset email through the real PocketBase route.
+Minimum proof before promoting a new HTTP provider:
 
-## Track 2: SMTP Over Workers Sockets (IMPLEMENTED)
-
-JS transport in `smtp-transport.mjs`, Go wrapper in `adapter/mail/smtp.go`. Connection reuse via RSET.
-
-Constraints:
-- Do not depend on Go `net/smtp` dialing.
-- Do not open sockets in global scope.
-- Support port 465 implicit TLS and port 587 StartTLS.
-- Do not support port 25; fail with a clear configuration error.
-- Honor PocketBase SMTP settings: host, port, username, password, TLS, auth method, local name.
-
-Likely implementation:
-1. Add a JavaScript mail transport module that imports `connect` from `cloudflare:sockets`.
-2. Expose it to Go through the existing WASM binding context or a small `syscall/js` API.
-3. Implement SMTP protocol commands directly or port a small JS SMTP client that works with Workers streams.
-4. Add a Go `mailer.Mailer` wrapper that serializes `mailer.Message` and calls the JS SMTP transport.
-5. Register that mailer in `adapter.New` when SMTP settings are enabled and no HTTP provider env is set.
-
-Do not patch `net/smtp` or try to monkey-patch Go networking globally. That would be harder to reason about and could affect OAuth or other outbound HTTP paths.
-
-Validation:
-- Fake SMTP server for protocol tests outside Workers if possible.
-- Worker-level proof against a test SMTP endpoint on 465 and 587.
-- PocketBase password-reset route sends a real message.
-- Port 25 returns a deterministic configuration error.
-
-## Open Questions
-
-- Should HTTP provider credentials live only in Worker secrets, or should a setup command write provider settings into D1 like PocketBase SMTP settings? Current recommendation: secrets for API keys, D1 for non-secret mail identity/settings.
-- Should direct R2 file download redirects share the same signed-token design as email links? This affects URL generation and app URL settings.
-- Should webhook delivery failures be retried through Queues? Current implementation returns the provider failure to PocketBase immediately.
+1. Send a password-reset email through the real PocketBase route.
+2. Verify provider error responses are returned to PocketBase instead of swallowed.
+3. Verify attachments under the 10 MiB cap are delivered.

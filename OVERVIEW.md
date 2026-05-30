@@ -63,6 +63,13 @@ A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives Po
 
 `ASSETS` is not an R2 bucket. It is a Workers Assets binding. Matching static assets can be served by Cloudflare without invoking Worker code.
 
+Worker limits that drive the design:
+- memory is 128 MB per isolate, including WASM allocations;
+- Worker size is 3 MB gzip on Free and 10 MB gzip on Paid;
+- startup time is 1 second for global-scope parse and execution;
+- request body size is 100 MB on Free/Pro, 200 MB on Business, and 500 MB by default on Enterprise;
+- each Static Asset file can be up to 25 MiB.
+
 ## New Projects
 
 Use:
@@ -86,13 +93,15 @@ Admin setup uses PocketBase's first-access installer at `/_/` by default. Headle
 
 ## Email
 
-Upstream PocketBase SMTP does not work as-is in Pocketflare. PocketBase uses Go `net/smtp`; Cloudflare Workers expose outbound TCP through the JavaScript `cloudflare:sockets` API. Ports 465 and 587 can be usable from Workers sockets, but the current Go WASM runtime does not bridge `net/smtp` to that API.
+Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. Provider selection priority is:
 
-Supported now:
-- `POCKETFLARE_MAIL_WEBHOOK_URL`: HTTPS endpoint that receives PocketBase mail JSON.
-- `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token sent to the webhook.
+1. `POCKETFLARE_MAIL_PROVIDER`: `resend`, `postmark`, `sendgrid`, `mailgun`, `smtp`, or `webhook`.
+2. `POCKETFLARE_MAIL_WEBHOOK_URL`: legacy generic webhook mode.
+3. PocketBase admin SMTP settings, delivered through the Workers sockets SMTP transport.
 
-The webhook payload includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md` for the SMTP sockets handoff.
+HTTP providers and the webhook are the recommended production paths. SMTP over Workers sockets is implemented but still needs provider-level proof, especially STARTTLS on port 587. Workers block outbound port 25.
+
+The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md`.
 
 ## File Storage Behavior
 
@@ -100,7 +109,9 @@ Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selec
 
 The standard PocketBase file API still proxies uploads and downloads through PocketBase. Upstream S3 mode does not make normal file-field uploads direct-to-S3. Direct browser-to-R2 uploads, signed R2 download redirects, or a public R2 custom domain would require explicit Pocketflare routes that preserve PocketBase access rules.
 
-Writes use R2 multipart uploads (bounded ~10 MB Go memory per upload). Copies use server-side S3 CopyObject when R2 API credentials are configured (see `wrangler.toml`), with a FixedLengthStream fallback that also avoids Go-side buffering.
+Uploads use a chunked R2 multipart writer: PocketBase receives the file through the API, the adapter buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
+
+Copies are separate from uploads. They happen only when PocketBase's filesystem `Copy(src, dst)` method duplicates an existing object. With optional R2 API credentials, that operation can use server-side S3 `CopyObject`. Without those credentials, the intended fallback relays the source object body to a new R2 object through the Worker. That fallback needs runtime proof before large-copy claims.
 
 ## Migrating Existing PocketBase Projects
 
@@ -164,17 +175,20 @@ Writes use R2 multipart uploads (bounded ~10 MB Go memory per upload). Copies us
 ## Known Limits
 
 - D1 has no multi-statement transaction boundary for separate `database/sql` calls. Rollback is a no-op; partial writes can remain after multi-step failures.
-- R2 writes use multipart upload (bounded ~10 MB Go memory). Copies use server-side S3 CopyObject (opt-in; see `wrangler.toml`) or a streaming fallback.
+- Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are not implemented.
+- R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured. The Worker relay fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
-- PocketBase SMTP email does not work as-is; the current code uses Go `net/smtp` and has no Worker sockets bridge. Use an HTTP mail provider hook until a Workers-compatible mailer exists.
+- HTTP mail providers and webhook email are the recommended production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
 - Backup restore is not fully decoupled from PocketBase backup S3 settings.
 
 ## References
 
 - Cloudflare Workers Static Assets: https://developers.cloudflare.com/workers/static-assets/
+- Cloudflare Workers limits: https://developers.cloudflare.com/workers/platform/limits/
 - Workers Assets binding: https://developers.cloudflare.com/workers/static-assets/binding/
 - Durable Objects: https://developers.cloudflare.com/durable-objects/
 - Workers Cron Triggers: https://developers.cloudflare.com/workers/configuration/cron-triggers/
 - D1 Wrangler commands: https://developers.cloudflare.com/d1/wrangler-commands/
 - R2 Wrangler commands: https://developers.cloudflare.com/r2/reference/wrangler-commands/
+- R2 upload methods: https://developers.cloudflare.com/r2/objects/upload-objects/

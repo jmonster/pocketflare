@@ -8,7 +8,7 @@ Pocketflare packages PocketBase for Cloudflare Workers. It runs PocketBase as Go
 ./scripts/scaffold-project.sh
 ```
 
-The scaffold prompts for the target directory, Go module path, Worker name, app URL, D1 databases, R2 buckets, and optional admin setup. If you approve it, the script runs Wrangler commands to create the D1 and R2 resources. It does not write admin passwords to tracked files.
+The scaffold prompts for the target directory, Go module path, Worker name, app URL, D1 databases, R2 buckets, and whether to create Cloudflare resources through Wrangler. It does not write admin passwords to tracked files.
 
 In the generated project:
 
@@ -34,16 +34,33 @@ Existing or migrated PocketBase settings are preserved.
 
 ## Email
 
-PocketBase SMTP settings do not work as-is in Pocketflare because upstream PocketBase uses Go `net/smtp`, while Cloudflare outbound sockets are exposed to JavaScript through `cloudflare:sockets`.
+Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. Mail delivery can use:
 
-Pocketflare supports an HTTPS mail webhook:
+- HTTP provider APIs: `resend`, `postmark`, `sendgrid`, or `mailgun`
+- a generic HTTPS webhook
+- SMTP through Workers sockets, currently experimental and still needs live-provider proof
+
+HTTP provider setup:
+
+```sh
+pnpm exec wrangler secret put POCKETFLARE_MAIL_API_KEY
+```
+
+Set non-secret provider defaults in `wrangler.toml`:
+
+```toml
+[vars]
+POCKETFLARE_MAIL_PROVIDER = "resend"
+```
+
+Generic webhook setup:
 
 ```sh
 pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_URL
 pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_TOKEN
 ```
 
-When `POCKETFLARE_MAIL_WEBHOOK_URL` is set, Pocketflare posts PocketBase mail messages as JSON to that URL. The token is optional and is sent as `Authorization: Bearer <token>`. The webhook must deliver the message through your mail provider.
+Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then PocketBase admin SMTP settings. Use HTTP providers or the webhook for production until SMTP sockets are proven against your provider.
 
 ## Cloudflare Bindings
 
@@ -77,7 +94,13 @@ Do not enable PocketBase S3 for normal Pocketflare file fields. In the Workers b
 
 Standard PocketBase file uploads and downloads are still mediated by the PocketBase API. Direct browser-to-R2 uploads and signed R2 download redirects are possible future Pocketflare features, not effects of enabling PocketBase S3.
 
-R2 writes use multipart uploads (bounded ~10 MB Go memory per upload). Copies use server-side S3 CopyObject when R2 API credentials are configured, or stream through the Worker with bounded memory when they are not. See the commented `R2_ACCOUNT_ID` and secrets in `wrangler.toml` to enable server-side copies.
+Terminology:
+
+- Upload means a PocketBase client posts a file to the PocketBase API, then Pocketflare writes it to R2. The current writer is a chunked R2 multipart writer: it buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
+- Download means PocketBase serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
+- Copy means PocketBase's filesystem `Copy(src, dst)` method duplicated an existing object. Normal uploads, downloads, and migration imports do not use S3 `CopyObject`.
+
+When optional R2 API credentials are configured, Copy can use server-side S3 `CopyObject` so object bytes do not pass through the Worker. Without those credentials, the intended fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. Treat the fallback as needing runtime proof before relying on it for large objects.
 
 ## Migrate Existing PocketBase
 
@@ -109,10 +132,27 @@ make deploy
 
 The data export includes `_params/settings`, so migrated app URL and trusted proxy settings are not replaced by Pocketflare defaults.
 
+## Cloudflare Limits That Matter
+
+Current Worker limits that shape Pocketflare:
+
+- Memory is 128 MB per isolate, including JavaScript heap and WASM allocations. A single isolate can handle many concurrent requests, so admin static assets must stay on Workers Assets and not boot Go WASM.
+- Worker size is 3 MB gzip on Free and 10 MB gzip on Paid, with a 64 MB uncompressed limit.
+- Startup time is 1 second for global-scope parse and execution.
+- Request body size is a Cloudflare account-plan limit, not a Workers-plan limit: 100 MB on Free/Pro, 200 MB on Business, and 500 MB by default on Enterprise. Standard PocketBase uploads still pass through the Worker, so this applies until direct R2 upload exists.
+- Static Asset files can be up to 25 MiB each.
+
 ## Current Limits
 
 - D1 cannot provide SQLite-equivalent multi-statement rollback through `database/sql`; each statement commits independently.
-- R2 writes stream via multipart upload; copies use server-side CopyObject (opt-in) or streaming fallback.
-- Realtime/SSE and PocketBase cron are not implemented.
-- PocketBase SMTP email does not work as-is in Pocketflare; use an HTTP mail provider hook until a Worker sockets mailer exists.
+- Uploads and downloads still pass through the Worker; direct browser-to-R2 upload and signed R2 download redirects are not implemented.
+- R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
+- Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
+- Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by PocketBase's in-process ticker.
+- HTTP mail providers and webhook delivery are the production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
 - Backup restore still needs a cleanup pass to remove the last dependency on PocketBase backup S3 settings.
+
+## References
+
+- Cloudflare Workers limits: https://developers.cloudflare.com/workers/platform/limits/
+- Cloudflare R2 upload methods: https://developers.cloudflare.com/r2/objects/upload-objects/

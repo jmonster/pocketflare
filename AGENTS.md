@@ -54,7 +54,7 @@ Known caveat: backup restore still has one upstream branch that checks `Settings
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 
-`adapter/r2blob` writes use R2 multipart upload (bounded ~10 MB Go memory). Copies use server-side S3 CopyObject when `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID` are set; otherwise they stream via FixedLengthStream (no Go buffering).
+`adapter/r2blob` upload writes use a chunked R2 multipart writer: buffer up to one part in Go, upload it, release it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload. Filesystem Copy is separate: it only runs when PocketBase calls `Copy(src, dst)` to duplicate an existing object. With `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID`, Copy can use server-side S3 `CopyObject`; otherwise the intended Worker relay fallback must be runtime-proven before claiming large-copy safety.
 
 Migration docs for local and existing S3-backed PocketBase storage live in `docs/storage-migration.md`. Pocketflare expects R2 object keys under `storage/<collectionId>/<recordId>/<filename>`.
 
@@ -108,6 +108,6 @@ PocketBase's built-in SMTP client uses Go `net/smtp`, which is non-functional in
 2. **Generic webhook** (`POCKETFLARE_MAIL_WEBHOOK_URL`): legacy path — posts JSON payloads to any HTTPS endpoint.
 3. **SMTP via Workers sockets**: when neither of the above is set, reads PocketBase admin SMTP settings at send time and delivers through `cloudflare:sockets` (JS module `smtp-transport.mjs`).
 
-Provider selection priority is: `MAIL_PROVIDER` > `MAIL_WEBHOOK_URL` > PocketBase SMTP settings. The SMTP transport supports ports 465 (implicit TLS) and 587 (STARTTLS). Port 25 is blocked.
+Provider selection priority is: `MAIL_PROVIDER` > `MAIL_WEBHOOK_URL` > PocketBase SMTP settings. HTTP providers and webhook are the production paths. SMTP sockets compile but need live-provider proof, especially STARTTLS on port 587. Port 25 is blocked.
 
 Env vars: `POCKETFLARE_MAIL_PROVIDER`, `POCKETFLARE_MAIL_API_KEY`, `POCKETFLARE_MAIL_DOMAIN` (Mailgun only), plus legacy `POCKETFLARE_MAIL_WEBHOOK_URL` / `POCKETFLARE_MAIL_WEBHOOK_TOKEN`.
