@@ -150,8 +150,9 @@ async function smtpHandshake(conn, cfg) {
 
     // Upgrade to TLS. startTls() returns a new TLS-wrapped socket; the
     // original socket is no longer usable.
+    try { conn.reader.releaseLock(); } catch (_) {}
+    try { conn.writer.releaseLock(); } catch (_) {}
     const tlsSocket = conn.socket.startTls();
-    try { conn.writer.close(); } catch (_) {}
     conn.socket = tlsSocket;
     conn.writer = tlsSocket.writable.getWriter();
     conn.reader = readableStreamReader(tlsSocket.readable);
@@ -338,6 +339,11 @@ function readableStreamReader(readable) {
     read: async () => {
       if (!reader) reader = readable.getReader();
       return reader.read();
+    },
+    releaseLock: () => {
+      if (!reader) return;
+      reader.releaseLock();
+      reader = null;
     },
   };
 }
