@@ -100,7 +100,7 @@ async function sendWithConfig(cfg) {
 // ---- connection -----------------------------------------------------------
 
 async function newConnection(host, port, tlsMode) {
-  const secureTransport = tlsMode === 'on' ? 'on' : 'off';
+  const secureTransport = tlsMode === 'on' ? 'on' : (tlsMode === 'starttls' ? 'starttls' : 'off');
 
   const socket = connect({ hostname: host, port }, { secureTransport });
   const writer = socket.writable.getWriter();
@@ -138,7 +138,7 @@ async function smtpHandshake(conn, cfg) {
     throw new Error(`SMTP EHLO failed: ${formatResponse(ehlo)}`);
   }
 
-  // For port 587 (STARTTLS), we connect with secureTransport='off' (plain TCP),
+  // For port 587 (STARTTLS), we connect with secureTransport='starttls',
   // send STARTTLS, then explicitly upgrade the socket with socket.startTls().
   // For port 465 (implicit TLS), TLS is already active from the connection.
   if (cfg.tls && cfg.port !== 465) {
