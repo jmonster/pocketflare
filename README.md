@@ -2,6 +2,31 @@
 
 Pocketflare packages PocketBase for Cloudflare Workers. It runs PocketBase as Go WASM, uses D1 for PocketBase databases, uses R2 for file storage/backups, and serves the PocketBase admin UI through Workers Assets.
 
+## Runtime Timing
+
+Pocketflare exposes app-level timing headers on dynamic responses:
+
+- `X-Pocketflare-Runtime`: `cold`, `boot_wait`, or `warm`
+- `Server-Timing`: `pf_total`, `pf_runtime_wait`, `pf_handler`, and cold-start boot phases
+
+Run:
+
+```sh
+node scripts/benchmark-worker.mjs https://<worker-domain> 20
+```
+
+On `pocketflare.garage.workers.dev`, immediately after deploy `ad9d0a94-09af-4bb4-9ace-3976693c1643`:
+
+```text
+admin asset: 227.48ms client, route=bypassed
+first dynamic request: 755.4ms client, runtime=cold
+server cold boot: pf_boot_total=239ms, pf_go_ready=239ms
+warm dynamic p50: 42.38ms client
+warm dynamic p95: 74.78ms client
+```
+
+`route=bypassed` means Cloudflare served the admin asset without invoking the Worker script or Go WASM runtime.
+
 ## New Project
 
 ```sh
