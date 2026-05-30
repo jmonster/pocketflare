@@ -9,6 +9,8 @@ node_modules/
 # Environment & secrets
 .env
 .env.*
+.dev.vars
+.dev.vars.*
 *.pem
 *.p8
 AuthKey_*
@@ -31,6 +33,10 @@ Thumbs.db
 *.test
 *.out
 /pocketflare
+pb_data/
+*.db
+*.sqlite
+*.sqlite3
 
 # PocketBase source (managed by scripts/update-pb.sh)
 internal/pocketbase/
