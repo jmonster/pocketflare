@@ -4,6 +4,7 @@ import { RealtimeDO } from "./realtime-do.mjs";
 import { registerSmtpTransport } from "./smtp-transport.mjs";
 
 async function run(ctx) {
+  console.log({ family: "pocketflare-runtime", phase: "smtp-register" });
   try {
     registerSmtpTransport();
   } catch (_) {
@@ -12,7 +13,9 @@ async function run(ctx) {
   }
 
   const go = new Go();
+  console.log({ family: "pocketflare-runtime", phase: "wasm-load-start" });
   const mod = await loadModule();
+  console.log({ family: "pocketflare-runtime", phase: "wasm-load-done" });
 
   let ready;
   const readyPromise = new Promise((resolve) => {
@@ -23,13 +26,25 @@ async function run(ctx) {
     ...go.importObject,
     workers: {
       ready: () => {
+        console.log({ family: "pocketflare-runtime", phase: "go-ready" });
         ready();
       },
     },
   });
 
-  go.run(instance, ctx);
-  await readyPromise;
+  console.log({ family: "pocketflare-runtime", phase: "go-run-start" });
+  const goPromise = go.run(instance, ctx);
+  await Promise.race([
+    readyPromise,
+    goPromise.then(
+      () => {
+        throw new Error("Go program exited before signaling ready");
+      },
+      (err) => {
+        throw err;
+      },
+    ),
+  ]);
 }
 
 // Keep one Go/PocketBase runtime per isolate. Booting per request lets browser
@@ -39,10 +54,15 @@ let runtimeContext;
 
 async function getBinding(env, ctx) {
   if (runtimePromise === undefined) {
+    console.log({ family: "pocketflare-runtime", phase: "init-start" });
     runtimeContext = createRuntimeContext({ env, ctx, binding: {} });
     runtimePromise = run(runtimeContext)
-      .then(() => runtimeContext.binding)
+      .then(() => {
+        console.log({ family: "pocketflare-runtime", phase: "init-ready" });
+        return runtimeContext.binding;
+      })
       .catch((err) => {
+        console.error({ family: "pocketflare-runtime", phase: "init-error", message: err.message, stack: err.stack });
         runtimePromise = undefined;
         runtimeContext = undefined;
         throw err;
