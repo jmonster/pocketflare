@@ -1,5 +1,6 @@
 # Build artifacts
 dist/
+build/
 
 # Dependencies
 node_modules/
@@ -28,6 +29,10 @@ Thumbs.db
 *.exe
 *.test
 *.out
+pocketflare
+
+# PocketBase source (managed by scripts/update-pb.sh)
+internal/pocketbase/
 
 # Archives
 *.zip
