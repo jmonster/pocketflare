@@ -136,6 +136,25 @@ compatibility_date = "2025-05-30"
 [vars]
 POCKETFLARE_APP_URL = "$(toml_escape "$app_url")"
 
+# Optional: override the R2 bucket names used at runtime.
+# By default the [[r2_buckets]] bindings below are used; these vars let you
+# point the application at different buckets without redeploying the binding.
+# POCKETFLARE_STORAGE_BUCKET_NAME = "$(toml_escape "$storage_bucket")"
+# POCKETFLARE_BACKUPS_BUCKET_NAME = "$(toml_escape "$backups_bucket")"
+
+# Optional: enable server-side R2 CopyObject for large file copies.
+# When unset, file copies stream through the Worker with bounded memory.
+# When all three values (below) are set, copies happen inside R2 with zero
+# Worker data transfer.
+#
+# Create an R2 API token (Object Read & Write on STORAGE and BACKUPS) at:
+#   https://dash.cloudflare.com/<your-account>/r2/api-tokens
+# Then set:
+#   pnpm exec wrangler secret put R2_ACCESS_KEY_ID
+#   pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY
+#
+# R2_ACCOUNT_ID = ""
+
 [[d1_databases]]
 binding = "APP_DB"
 database_name = "$(toml_escape "$app_db_name")"
@@ -157,6 +176,26 @@ bucket_name = "$(toml_escape "$backups_bucket")"
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
+
+# ── Cron triggers ──────────────────────────────────────────────────────────
+# Uncomment to enable scheduled tasks. PocketBase cron jobs run on the
+# scheduled event; the Worker fires every minute to check for due jobs.
+#
+# [triggers]
+# crons = ["* * * * *"]
+
+# ── Optional: realtime/SSE via Durable Objects ─────────────────────────────
+# Uncomment to enable cross-isolate SSE. Without this, GET /api/realtime
+# falls through to Go where SSE is non-functional on Workers (the WASM
+# bridge's Flush is a no-op). ~$4/mo for a single always-warm DO instance.
+#
+# [[durable_objects.bindings]]
+# name = "REALTIME_DO"
+# class_name = "RealtimeDO"
+#
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["RealtimeDO"]
 EOF
 }
 
