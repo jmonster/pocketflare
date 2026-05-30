@@ -156,12 +156,8 @@ async function smtpHandshake(conn, cfg) {
     conn.writer = tlsSocket.writable.getWriter();
     conn.reader = readableStreamReader(tlsSocket.readable);
 
-    // Read the new greeting sent by the server over the encrypted channel.
-    const newGreeting = await readResponse(conn);
-    if (newGreeting.code !== 220) {
-      throw new Error(`SMTP post-STARTTLS greeting failed: ${formatResponse(newGreeting)}`);
-    }
-    // Re-EHLO after STARTTLS.
+    // Re-EHLO over the encrypted channel. There is no second greeting
+    // after STARTTLS — the server is waiting for the next command.
     await writeLine(conn, `EHLO ${localName}`);
     const ehlo2 = await readResponse(conn);
     if (ehlo2.code !== 250) {
