@@ -29,5 +29,7 @@ func main() {
 		log.Fatalf("failed to build router: %v", err)
 	}
 
-	workers.Serve(handler)
+	workers.ServeNonBlock(handler)
+	workers.Ready()
+	select {}
 }

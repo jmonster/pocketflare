@@ -19,3 +19,7 @@ bucket_name = "pocketflare-storage"
 [[r2_buckets]]
 binding = "BACKUPS"
 bucket_name = "pocketflare-backups"
+
+[assets]
+directory = "./admin-ui"
+binding = "ASSETS"

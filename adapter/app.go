@@ -19,8 +19,11 @@ import (
 // New creates a new PocketBase app pre-configured for the Workers runtime.
 //
 // It bootstraps the app, runs all migrations, builds the API router with
-// CORS and the admin dashboard route (with gzip), and returns the app
-// instance along with the http.Handler ready for use in a Workers fetch handler.
+// CORS, and returns the app instance along with the http.Handler ready for
+// use in a Workers fetch handler.
+//
+// Admin UI static assets are served via Cloudflare Workers Assets from
+// admin-ui/_ before WASM boot.
 func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEvent], error) {
 	pb := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDev:     false,
@@ -71,15 +74,6 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 			http.MethodDelete,
 		},
 	}))
-
-	// Admin dashboard is NOT served from the Worker. Each static asset request
-	// would trigger a cold WASM instantiation (39MB module). A page with 30+
-	// assets fires 30+ simultaneous cold boots, overwhelming the Workers runtime
-	// and producing 503 errors.
-	//
-	// The PocketBase admin UI is static HTML/JS/CSS that calls the REST API for
-	// data. Host it on Cloudflare Pages or any static host, pointed at this
-	// Worker's /api/* endpoints.
 
 	return pb, pbRouter, nil
 }

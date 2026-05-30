@@ -23,10 +23,37 @@ async function run(ctx) {
   await readyPromise;
 }
 
+// Keep one Go/PocketBase runtime per isolate. Booting per request lets browser
+// fan-out instantiate multiple ~39 MB WASM heaps inside the same 128 MB isolate.
+let runtimePromise;
+let runtimeContext;
+
+async function getBinding(env, ctx) {
+  if (runtimePromise === undefined) {
+    runtimeContext = createRuntimeContext({ env, ctx, binding: {} });
+    runtimePromise = run(runtimeContext)
+      .then(() => runtimeContext.binding)
+      .catch((err) => {
+        runtimePromise = undefined;
+        runtimeContext = undefined;
+        throw err;
+      });
+  } else {
+    runtimeContext.env = env;
+    runtimeContext.ctx = ctx;
+  }
+
+  return runtimePromise;
+}
+
 async function fetch(req, env, ctx) {
-  const binding = {};
+  const url = new URL(req.url);
+  if (url.pathname === "/_" || url.pathname.startsWith("/_/")) {
+    return env.ASSETS.fetch(req);
+  }
+
   try {
-    await run(createRuntimeContext({ env, ctx, binding }));
+    const binding = await getBinding(env, ctx);
     const response = await binding.handleRequest(req);
     return response;
   } catch (e) {
@@ -38,8 +65,7 @@ async function fetch(req, env, ctx) {
 }
 
 async function scheduled(event, env, ctx) {
-  const binding = {};
-  await run(createRuntimeContext({ env, ctx, binding }));
+  const binding = await getBinding(env, ctx);
   return binding.runScheduler(event);
 }
 
