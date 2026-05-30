@@ -76,7 +76,32 @@
 	if (!globalThis.path) {
 		globalThis.path = {
 			resolve(...pathSegments) {
-				return pathSegments.join("/");
+				// Naive join-only would produce /foo/../bar instead of /bar.
+				// Normalize . and .. so paths match Go's filepath.Clean output.
+				// Workers does not provide globalThis.path (no nodejs_compat set),
+				// so this polyfill is always active for Go's syscall/fs bridge.
+				// The fs bridge returns ENOSYS for everything, so this is
+				// defensive — the resolved path is never used for real I/O.
+				const joined = pathSegments.join("/");
+				if (joined === "") return ".";
+				const isAbs = joined[0] === "/";
+				const segments = joined.split("/");
+				const out = [];
+				for (const s of segments) {
+					if (s === "" || s === ".") continue;
+					if (s === "..") {
+						if (out.length > 0 && out[out.length - 1] !== "..") {
+							out.pop();
+						} else if (!isAbs) {
+							out.push("..");
+						}
+					} else {
+						out.push(s);
+					}
+				}
+				let result = out.join("/");
+				if (isAbs) result = "/" + result;
+				return result || (isAbs ? "/" : ".");
 			}
 		}
 	}
