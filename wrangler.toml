@@ -2,6 +2,9 @@ name = "pocketflare"
 main = "dist/worker.mjs"
 compatibility_date = "2025-05-30"
 
+[vars]
+POCKETFLARE_APP_URL = "https://pocketflare.garage.workers.dev"
+
 [[d1_databases]]
 binding = "APP_DB"
 database_name = "pocketflare-app"

@@ -4,12 +4,13 @@ set -euo pipefail
 # migrate-files.sh — Generate upload instructions for PocketBase storage files to R2
 #
 # Usage:
-#   ./scripts/migrate-files.sh <path-to-storage-dir> [--execute] [--all]
+#   ./scripts/migrate-files.sh <path-to-storage-dir> [--execute] [--all] [--no-storage-prefix]
 #
 # Examples:
 #   ./scripts/migrate-files.sh ./pb_data/storage/         # print wrangler commands
 #   ./scripts/migrate-files.sh ./pb_data/storage/ --execute  # run uploads
 #   ./scripts/migrate-files.sh ./pb_data/storage/ --all      # include files >5MB
+#   ./scripts/migrate-files.sh ./r2-export --no-storage-prefix --execute
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -49,11 +50,13 @@ shift 2>/dev/null || true
 
 EXECUTE=false
 INCLUDE_ALL=false
+STORAGE_PREFIX=true
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --execute) EXECUTE=true ;;
-        --all)     INCLUDE_ALL=true ;;
+        --execute)           EXECUTE=true ;;
+        --all)               INCLUDE_ALL=true ;;
+        --no-storage-prefix) STORAGE_PREFIX=false ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
     shift
@@ -70,11 +73,10 @@ if [[ ! -d "$STORAGE_DIR" ]]; then
 fi
 
 # ── wrangler check ────────────────────────────────────────────────────────────
-if [[ "$EXECUTE" == true ]] && ! command -v wrangler &>/dev/null; then
-    echo "Error: wrangler is not installed."
+if [[ "$EXECUTE" == true ]] && ! command -v pnpm &>/dev/null; then
+    echo "Error: pnpm is not installed."
     echo ""
-    echo "  Install it with: npm install -g wrangler"
-    echo "  Or via:          pnpm add -g wrangler"
+    echo "  Install pnpm, then run this from a Pocketflare project with Wrangler available to pnpm exec."
     echo ""
     exit 1
 fi
@@ -94,6 +96,7 @@ echo "Scanning: $STORAGE_ABS"
 echo "Bucket:   $BUCKET"
 echo "Max size: $([ "$INCLUDE_ALL" == true ] && echo "unlimited" || echo "5 MB")"
 echo "Execute:  $([ "$EXECUTE" == true ] && echo "yes" || echo "no (dry-run)")"
+echo "Prefix:   $([ "$STORAGE_PREFIX" == true ] && echo "storage/" || echo "none")"
 echo ""
 
 # Walk the PocketBase storage layout: collectionId/recordId/filename
@@ -112,15 +115,19 @@ while IFS= read -r -d '' filepath; do
     UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
     TOTAL_SIZE=$((TOTAL_SIZE + filesize))
 
-    OBJECT_KEY="storage/$relpath"
+    if [[ "$STORAGE_PREFIX" == true ]]; then
+        OBJECT_KEY="storage/$relpath"
+    else
+        OBJECT_KEY="$relpath"
+    fi
 
     if [[ "$EXECUTE" == true ]]; then
         echo "# Uploading: $relpath ($(human_size "$filesize"))"
-        wrangler r2 object put "$BUCKET/$OBJECT_KEY" --file "$filepath" 2>/dev/null || {
+        pnpm exec wrangler r2 object put "$BUCKET/$OBJECT_KEY" --file "$filepath" 2>/dev/null || {
             echo "# FAILED: $relpath"
         }
     else
-        echo "wrangler r2 object put \"$BUCKET/$OBJECT_KEY\" --file \"$filepath\""
+        echo "pnpm exec wrangler r2 object put \"$BUCKET/$OBJECT_KEY\" --file \"$filepath\""
     fi
 done < <(find "$STORAGE_ABS" -type f -print0)
 
@@ -132,4 +139,5 @@ echo "# Summary: $UPLOAD_COUNT files to upload, $SKIPPED_COUNT skipped (over 5MB
 echo "# Total data: $(human_size "$TOTAL_SIZE")"
 echo "#"
 echo "# To include files over 5MB, pass --all"
+echo "# If your source export already includes storage/ in each path, pass --no-storage-prefix"
 echo "# To set a custom bucket: WRANGLER_R2_BUCKET=<name> $0 ..."

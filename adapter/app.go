@@ -5,6 +5,7 @@ package adapter
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/pocketflare/pocketflare/adapter/r2blob"
 	"github.com/pocketflare/pocketflare/adapter/wasmdb"
+	"github.com/pocketflare/pocketflare/adapter/webmailer"
 )
 
 // New creates a new PocketBase app pre-configured for the Workers runtime.
@@ -39,8 +41,14 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		return filesystem.NewBlob(r2blob.New("BACKUPS")), nil
 	}
 
+	applyNewInstallDefaults(pb, config)
+
 	if err := pb.Bootstrap(); err != nil {
 		return nil, nil, fmt.Errorf("bootstrap: %w", err)
+	}
+
+	if config.MailWebhookURL != "" {
+		registerWebMailer(pb, config)
 	}
 
 	// Inject user-defined Go migrations before running all migrations.
@@ -76,6 +84,34 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	}))
 
 	return pb, pbRouter, nil
+}
+
+func applyNewInstallDefaults(app *pocketbase.PocketBase, config Config) {
+	settings := app.Settings()
+
+	// Bootstrap persists these values only when the D1 database has no existing
+	// _params/settings row. Migrated and already-deployed projects keep theirs.
+	if appURL := strings.TrimRight(strings.TrimSpace(config.AppURL), "/"); appURL != "" {
+		settings.Meta.AppURL = appURL
+	}
+
+	headers := config.TrustedProxyHeaders
+	if headers == nil {
+		headers = []string{"CF-Connecting-IP"}
+	}
+	settings.TrustedProxy.Headers = append([]string(nil), headers...)
+}
+
+func registerWebMailer(app *pocketbase.PocketBase, config Config) {
+	client := &webmailer.Client{
+		URL:   config.MailWebhookURL,
+		Token: config.MailWebhookToken,
+	}
+
+	app.OnMailerSend().BindFunc(func(e *core.MailerEvent) error {
+		e.Mailer = client
+		return e.Next()
+	})
 }
 
 // ensureSuperuser creates an initial superuser if one with the given email

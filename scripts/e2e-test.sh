@@ -5,6 +5,8 @@
 set -euo pipefail
 
 BASE="${1:-https://pocketflare.garage.workers.dev}"
+ADMIN_EMAIL="${POCKETFLARE_ADMIN_EMAIL:-}"
+ADMIN_PASSWORD="${POCKETFLARE_ADMIN_PASSWORD:-}"
 PASS=0
 FAIL=0
 
@@ -27,6 +29,11 @@ echo "=== pocketflare e2e test suite ==="
 echo "target: $BASE"
 echo ""
 
+if [[ -z "$ADMIN_EMAIL" || -z "$ADMIN_PASSWORD" ]]; then
+    echo "Error: set POCKETFLARE_ADMIN_EMAIL and POCKETFLARE_ADMIN_PASSWORD before running admin e2e tests."
+    exit 1
+fi
+
 # ── 1. Health ──
 echo "── 1. Health ──"
 assert "health returns 200" '[ "$(curl -sS --max-time 60 "$BASE/api/health" | json .code)" = "200" ]'
@@ -35,12 +42,12 @@ assert "health returns 200" '[ "$(curl -sS --max-time 60 "$BASE/api/health" | js
 echo "── 2. Admin auth ──"
 TOKEN=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/auth-with-password" \
     -H "Content-Type: application/json" \
-    -d '{"identity":"admin@test.com","password":"test123456"}' | json .token)
+    -d "$(jq -n --arg identity "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" '{identity:$identity,password:$password}')" | json .token)
 assert "login returns JWT token" '[ -n "$TOKEN" ]'
 
 BAD_STATUS=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/auth-with-password" \
     -H "Content-Type: application/json" \
-    -d '{"identity":"admin@test.com","password":"wrong"}' | json .status)
+    -d "$(jq -n --arg identity "$ADMIN_EMAIL" --arg password "__wrong__$ADMIN_PASSWORD" '{identity:$identity,password:$password}')" | json .status)
 assert "wrong password rejected" '[ "$BAD_STATUS" != "200" ]'
 
 # ── 3. Collection CRUD ──

@@ -1,189 +1,167 @@
-# Pocketflare — PocketBase on Cloudflare Workers
+# Pocketflare Overview
 
-## Quick start (new app)
+Pocketflare runs PocketBase on Cloudflare Workers by compiling PocketBase to Go WASM, adapting SQLite access to D1, and adapting file storage to R2.
 
-```bash
-git clone https://github.com/pocketflare/pocketflare
-cd pocketflare
-./scripts/update-pb.sh v0.36.9
-pnpm install
-make build
-# Create Cloudflare resources (see below), then:
-make deploy
-```
-
-## Quick start (existing PocketBase app)
-
-```bash
-# Inside your PocketBase project:
-/pocketflare-migrate
-```
-
-This skill analyzes your project and applies the transformations described below.
-
-## Architecture
+## Runtime
 
 ```
-PocketBase Core (4 patches, build-tag-gated)
-  ├── DB layer ──→ adapter/wasmdb ──→ D1 (no-op Tx wrapper)
-  ├── Filesystem ──→ adapter/r2blob ──→ R2 (blob.Driver)
-  ├── HTTP router ──→ syumai/workers Serve() ──→ fetch handler
-  └── Hooks/auth ──→ unmodified pure Go
+Browser
+  ├─ /_/* static admin files
+  │    └─ Cloudflare Workers Assets binding: ASSETS -> admin-ui/_
+  └─ /api/* and other dynamic routes
+       └─ worker.mjs
+            └─ singleton Go WASM runtime per isolate
+                 └─ cmd/pocketflare/main.go
+                      └─ adapter.New()
+                           ├─ PocketBase router
+                           ├─ D1 APP_DB / LOGS_DB
+                           └─ R2 STORAGE / BACKUPS
 ```
 
-## Project structure
+`worker.mjs` keeps one Go runtime per isolate. This is intentional: browser admin pages load many files in parallel, and creating one Go WASM runtime per request can exceed the Worker memory limit.
 
-```
-pocketflare/
-├── go.mod, go.sum, Makefile, wrangler.toml, package.json
-├── OVERVIEW.md
-│
-├── adapter/
-│   ├── app.go                       # Bootstrap + superuser creation (WASM-only)
-│   ├── wasmdb/db.go                 # D1 DBConnect
-│   ├── wasmdb/driver.go             # No-op Tx wrapper
-│   └── r2blob/r2blob.go             # R2 blob.Driver
-│
-├── cmd/pocketflare/
-│   └── main.go                      # workers.Serve() entry point
-│
-├── patches/
-│   ├── 001-bootstrap-wasm.patch     # OS ops extraction
-│   ├── 002-filesystem-wasm.patch    # R2 filesystem injection
-│   ├── 003-nil-body-fix.patch       # Nil body guard for Workers
-│   └── 004-filesystem-newblob.patch # NewBlob constructor
-│
-├── scripts/
-│   ├── update-pb.sh                 # Fetch PocketBase + apply patches
-│   ├── migrate-data.sh              # SQLite → D1 data export
-│   └── migrate-files.sh             # pb_data/storage → R2 uploads
-│
-├── testapp/                         # Example migrated app
-│   ├── main.go                      # Custom migration + hook
-│   └── go.mod
-│
-├── worker.mjs, runtime.mjs          # JS glue for Workers
-│   wasm_exec.js                     # syumai/workers modified runtime
-│
-└── dist/                            # Build artifacts (gitignored)
-```
+Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, not by PocketBase. The explicit `env.ASSETS.fetch(req)` branch in `worker.mjs` keeps `/_` and `/_/*` off the Go runtime even when routing falls through to the Worker script.
 
-## Migrating an existing PocketBase app
+## Project Layout
 
-### main.go transformation
+| Path | Purpose |
+|---|---|
+| `cmd/pocketflare/main.go` | WASM entry point; reads optional env config and starts `syumai/workers`. |
+| `adapter/app.go` | Creates PocketBase, wires D1/R2, applies new-install defaults, runs migrations, builds router. |
+| `adapter/wasmdb/` | D1 `database/sql` driver wrapper and DB binding routing. |
+| `adapter/r2blob/` | `blob.Driver` implementation backed by Cloudflare R2 bindings. |
+| `admin-ui/_/` | PocketBase admin UI static assets served by Workers Assets. |
+| `worker.mjs` | Worker fetch/scheduled handlers and singleton WASM runtime management. |
+| `runtime.mjs` | WASM module loader and Workers runtime context bridge. |
+| `patches/` | Patch set applied to upstream PocketBase by `scripts/update-pb.sh`. |
+| `scripts/scaffold-project.sh` | Prompts and creates a new Pocketflare project. |
+| `scripts/migrate-data.sh` | Exports PocketBase SQLite `data.db` to SQL for D1 import. |
+| `scripts/migrate-files.sh` | Uploads `pb_data/storage` files to the R2 `STORAGE` bucket. |
+| `wrangler.toml` | Worker name, app URL var, D1 bindings, R2 bindings, and Workers Assets binding. |
 
-**Before:**
-```go
-app := pocketbase.New()
-app.OnRecordCreate("posts").BindFunc(myHook)
-app.Start()
+## Cloudflare Resources
+
+Required bindings:
+- `APP_DB`: D1 database for PocketBase application data.
+- `LOGS_DB`: D1 database for PocketBase auxiliary/log data.
+- `STORAGE`: R2 bucket for PocketBase file fields.
+- `BACKUPS`: R2 bucket for PocketBase backups.
+- `ASSETS`: Workers Assets binding for `admin-ui/`.
+
+`STORAGE` and `BACKUPS` are used directly by the patched WASM filesystem path. Users do not need to enable PocketBase's S3 file-storage feature for normal file fields. One backup-restore branch still consults PocketBase's backup S3 setting; backup restore needs follow-up before claiming full S3 independence.
+
+`ASSETS` is not an R2 bucket. It is a Workers Assets binding. Matching static assets can be served by Cloudflare without invoking Worker code.
+
+## New Projects
+
+Use:
+
+```sh
+./scripts/scaffold-project.sh
 ```
 
-**After:**
-```go
-pb, router, _ := adapter.New(adapter.Config{
-    DataDir:       "/tmp/pb_data",
-    AdminEmail:    "admin@example.com",
-    AdminPassword: "changeme123",
-    AppMigrations: appMigrations(),
-})
-pb.OnRecordCreate("posts").BindFunc(myHook) // identical API
-handler, _ := router.BuildMux()
-workers.Serve(handler) // replaces app.Start()
-```
+The script prompts for:
+- target directory
+- Go module path
+- Cloudflare Worker name
+- workers.dev account subdomain or explicit app URL
+- D1 database names and IDs
+- R2 bucket names
+- whether to run Wrangler create commands
 
-### Go migrations
+The generated `wrangler.toml` sets `POCKETFLARE_APP_URL` to the chosen Worker URL. On a fresh database, Pocketflare saves that as PocketBase's app URL. It also trusts `CF-Connecting-IP` by default. Existing settings rows are not overwritten.
 
-Embed `pb_migrations/*.go` and pass to `AppMigrations`:
+Admin setup uses PocketBase's first-access installer at `/_/` by default. Headless bootstrap is available through `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD`, but it should be treated as an escape hatch and removed after the first successful boot.
 
-```go
-func appMigrations() core.MigrationsList {
-    //go:embed pb_migrations
-    var migrationsFS embed.FS
-    migrations, _ := core.NewMigrationsList(migrationsFS)
-    return migrations
-}
-```
+## Email
 
-### Data migration
+Upstream PocketBase SMTP does not work as-is in Pocketflare. PocketBase uses Go `net/smtp`; Cloudflare Workers expose outbound TCP through the JavaScript `cloudflare:sockets` API. Ports 465 and 587 can be usable from Workers sockets, but the current Go WASM runtime does not bridge `net/smtp` to that API.
 
-```bash
-./scripts/migrate-data.sh ./pb_data/data.db > migration.sql
-wrangler d1 execute APP_DB --remote --file=migration.sql
-```
+Supported now:
+- `POCKETFLARE_MAIL_WEBHOOK_URL`: HTTPS endpoint that receives PocketBase mail JSON.
+- `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token sent to the webhook.
 
-### File migration
+The webhook payload includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md` for the SMTP sockets handoff.
 
-```bash
-./scripts/migrate-files.sh ./pb_data/storage/ --execute
-```
+## File Storage Behavior
 
-### Cloudflare resources
+Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selection for normal file fields. The adapter injects an R2-backed filesystem directly, so users should not enable PocketBase S3 just to make file storage work.
 
-```bash
-wrangler d1 create myapp-db
-wrangler d1 create myapp-logs
-wrangler r2 bucket create myapp-storage
-wrangler r2 bucket create myapp-backups
-# Fill returned IDs into wrangler.toml
-```
+The standard PocketBase file API still proxies uploads and downloads through PocketBase. Upstream S3 mode does not make normal file-field uploads direct-to-S3. Direct browser-to-R2 uploads, signed R2 download redirects, or a public R2 custom domain would require explicit Pocketflare routes that preserve PocketBase access rules.
 
-## Limitations
+Current adapter copies and writes are memory-buffered. The better implementation path is R2 multipart upload for writes and R2 S3 `CopyObject`/`UploadPartCopy` for server-side copies.
 
-### Feature status
+## Migrating Existing PocketBase Projects
 
-| Feature | Status | Notes |
-|---|---|---|
-| CRUD (collections, records) | Works | Full REST API |
-| Auth (superusers, users, JWT) | Works | Registration, login, refresh, scoping |
-| File upload/download | Works | R2-backed, multipart upload |
-| Image thumbnails | Works | `disintegration/imaging` compiled in |
-| Go migrations | Works | No-op Tx wrapper; each statement is atomic but cross-statement rollback not supported |
-| Custom hooks | Works | Identical API to PocketBase |
-| Realtime/SSE | Deferred | Durable Objects broker (Phase 4) |
-| In-process cron | Deferred | Workers Cron Triggers (Phase 4) |
-| Admin UI | Partial | `/_{path...}` route served, untested |
-| Sending email | Deferred | Workers TCP Sockets (Phase 4) |
+1. Scaffold a Pocketflare project.
 
-### Transaction model (important)
+2. Copy your Go hooks and app customization into `cmd/pocketflare/main.go` or local packages. Replace `app.Start()` with:
 
-Pocketflare runs on Cloudflare D1, which is fundamentally different from the SQLite that PocketBase normally uses. The most important difference is the **transaction model**.
+   ```go
+   pb, router, err := adapter.New(adapter.Config{
+       DataDir:       "/tmp/pb_data",
+       AppURL:        trimmedEnv("POCKETFLARE_APP_URL"),
+       AdminEmail:    trimmedEnv("POCKETFLARE_ADMIN_EMAIL"),
+       AdminPassword: os.Getenv("POCKETFLARE_ADMIN_PASSWORD"),
+       AppMigrations: customMigrations(),
+   })
+   if err != nil {
+       log.Fatal(err)
+   }
 
-In standard PocketBase + SQLite:
-- `app.RunInTransaction(fn)` creates a real SQL transaction
-- All writes inside `fn` are invisible until the transaction commits
-- If `fn` returns an error, all writes are atomically rolled back
-- Multi-statement operations (save record + run hooks + write external auth) happen atomically or not at all
+   // Register hooks before BuildMux().
 
-On D1 (via Pocketflare):
-- Each individual SQL statement (`INSERT`, `UPDATE`, `DELETE`) is atomic on its own
-- **Multi-statement transactions spanning separate calls are not supported**
-- `RunInTransaction` still runs correctly — the callback executes — but `Commit` and `Rollback` are no-ops
-- Every write takes effect immediately, regardless of whether the wrapping "transaction" succeeds or fails
+   handler, err := router.BuildMux()
+   if err != nil {
+       log.Fatal(err)
+   }
+   workers.ServeNonBlock(handler)
+   workers.Ready()
+   select {}
+   ```
 
-**Why D1 works this way:** D1 is an HTTP-accessible stateless database. Every `prepare().run()` call is an independent operation. While D1 does have a `batch()` API for atomic multi-statement operations, it requires all statements upfront in a single call — incompatible with PocketBase's pattern of interleaving writes, reads, hooks, and callbacks within a transaction. D1's session API provides sequential consistency (you see your writes) but not transactional boundaries.
+3. Port migrations into a `core.MigrationsList` and pass it as `AppMigrations`. Keep migration registration at package/runtime level, not inside a function-scoped `//go:embed` declaration.
 
-**What this means for you:**
-- Normal CRUD operations are not affected — each Save() or Delete() generates a single atomic SQL statement
-- Schema migrations run one statement at a time; migration version tracking means failed migrations will retry
-- The deprecated `DrySubmit` validation path persists temp data even on "rollback" — harmless but untidy
-- If a collection import or batch API call fails partway, partial writes may remain — verify after failure
-- Custom hooks that write to multiple tables inside `RunInTransaction` will not get atomic rollback
+4. Export data:
 
-**This is a D1 platform constraint, not a Pocketflare bug.** No driver trick, session mode, or workaround can bridge this gap. It has been investigated thoroughly — see `adapter/wasmdb/driver.go` for the full technical analysis.
+   ```sh
+   mkdir -p .artifacts
+   ./scripts/migrate-data.sh /path/to/pb_data/data.db > .artifacts/pocketbase-to-d1.sql
+   pnpm exec wrangler d1 execute APP_DB --remote --file .artifacts/pocketbase-to-d1.sql
+   ```
 
-## Build
+   The export keeps `_params/settings`, so migrated app URL, mail, auth, and trusted-proxy settings are preserved. `_migrations` is excluded; `_logs` is excluded unless `--include-logs` is passed.
 
-```bash
-make build
-# Builds dist/app.wasm (8.6MB gzipped) + JS glue
-```
+5. Upload files:
 
-## Patches (against PocketBase v0.36.9)
+   ```sh
+   WRANGLER_R2_BUCKET=<storage-bucket> ./scripts/migrate-files.sh /path/to/pb_data/storage --execute
+   ```
 
-| # | File | Change |
-|---|------|--------|
-| 001 | `core/base.go` + new files | Extract OS ops to `prepareDataDir()`/`registerNotifyWatcherHooks()` |
-| 002 | `core/base_filesystem_wasm.go` (new) | Inject R2 filesystem via function variables |
-| 003 | `tools/router/rereadable_read_closer.go` | Nil guard on `ReadCloser` for GET requests |
-| 004 | `tools/filesystem/filesystem.go` | `NewBlob()` constructor for arbitrary blob.Driver |
+   Files are uploaded under the `storage/` prefix expected by `adapter/r2blob`.
+
+   Existing S3-backed PocketBase apps should copy their existing `storage/` prefix into the Pocketflare R2 `STORAGE` bucket. See `docs/storage-migration.md`.
+
+6. Build and deploy:
+
+   ```sh
+   ./scripts/update-pb.sh
+   pnpm install
+   make deploy
+   ```
+
+## Known Limits
+
+- D1 has no multi-statement transaction boundary for separate `database/sql` calls. Rollback is a no-op; partial writes can remain after multi-step failures.
+- R2 writes and copies are memory-buffered in Go. Large files can exceed Workers memory limits.
+- Realtime/SSE is not implemented; it needs a Durable Objects broker or another fan-out design.
+- In-process PocketBase cron is not integrated with Workers Cron Triggers yet.
+- PocketBase SMTP email does not work as-is; the current code uses Go `net/smtp` and has no Worker sockets bridge. Use an HTTP mail provider hook until a Workers-compatible mailer exists.
+- Backup restore is not fully decoupled from PocketBase backup S3 settings.
+
+## References
+
+- Cloudflare Workers Static Assets: https://developers.cloudflare.com/workers/static-assets/
+- Workers Assets binding: https://developers.cloudflare.com/workers/static-assets/binding/
+- D1 Wrangler commands: https://developers.cloudflare.com/d1/wrangler-commands/
+- R2 Wrangler commands: https://developers.cloudflare.com/r2/reference/wrangler-commands/
