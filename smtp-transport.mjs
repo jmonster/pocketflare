@@ -169,6 +169,16 @@ async function smtpHandshake(conn, cfg) {
   // AUTH
   if (cfg.username && cfg.password) {
     const authMethod = (cfg.authMethod || 'PLAIN').toUpperCase();
+    console.log({
+      family: 'pocketflare-smtp',
+      phase: 'auth-start',
+      host: cfg.host,
+      port: cfg.port,
+      tls: !!cfg.tls,
+      authMethod,
+      usernameLength: String(cfg.username || '').length,
+      passwordLength: String(cfg.password || '').length,
+    });
     if (authMethod === 'LOGIN') {
       await authLogin(conn, cfg.username, cfg.password);
     } else {
