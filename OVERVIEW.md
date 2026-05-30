@@ -55,7 +55,7 @@ Required bindings:
 - `STORAGE`: R2 bucket for PocketBase file fields.
 - `BACKUPS`: R2 bucket for PocketBase backups.
 - `ASSETS`: Workers Assets binding for `admin-ui/`.
-- `REALTIME_DO`: Durable Object for SSE connections (class `RealtimeDO`).
+- `REALTIME_DO`: (optional) Durable Object for SSE connections. Uncomment in `wrangler.toml` to enable; adds ~$4/mo for a single always-warm DO instance.
 
 A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives PocketBase's cron scheduler.
 
@@ -165,7 +165,7 @@ Writes use R2 multipart uploads (bounded ~10 MB Go memory per upload). Copies us
 
 - D1 has no multi-statement transaction boundary for separate `database/sql` calls. Rollback is a no-op; partial writes can remain after multi-step failures.
 - R2 writes use multipart upload (bounded ~10 MB Go memory). Copies use server-side S3 CopyObject (opt-in; see `wrangler.toml`) or a streaming fallback.
-- Realtime/SSE is implemented via a Durable Object (`RealtimeDO`) that holds SSE connections open. PocketBase handles auth and subscription matching in Go; the DO handles transport. `GET /api/realtime` is intercepted by `worker.mjs` and routed to the DO; `POST /api/realtime` (subscriptions) still goes through Go.
+- Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
 - PocketBase SMTP email does not work as-is; the current code uses Go `net/smtp` and has no Worker sockets bridge. Use an HTTP mail provider hook until a Workers-compatible mailer exists.
 - Backup restore is not fully decoupled from PocketBase backup S3 settings.

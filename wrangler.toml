@@ -42,10 +42,15 @@ binding = "ASSETS"
 [triggers]
 crons = ["* * * * *"]
 
-[[durable_objects.bindings]]
-name = "REALTIME_DO"
-class_name = "RealtimeDO"
-
-[[migrations]]
-tag = "v1"
-new_classes = ["RealtimeDO"]
+# ── Optional: realtime/SSE via Durable Objects ─────────────────────────
+# Uncomment to enable cross-isolate SSE. Without this, GET /api/realtime
+# falls through to Go where SSE is non-functional on Workers (the WASM
+# bridge's Flush is a no-op). ~$4/mo for a single always-warm DO instance.
+#
+# [[durable_objects.bindings]]
+# name = "REALTIME_DO"
+# class_name = "RealtimeDO"
+#
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["RealtimeDO"]

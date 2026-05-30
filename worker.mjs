@@ -65,7 +65,10 @@ async function fetch(req, env, ctx) {
   // connections open beyond the Worker fetch timeout and fan out across
   // isolates. Only GET (connection) is intercepted; POST (subscriptions)
   // still goes through Go for auth and access control.
-  if (url.pathname === "/api/realtime" && req.method === "GET") {
+  //
+  // The DO is optional — without it, realtime falls through to Go where
+  // SSE is non-functional on Workers (Flush is a no-op in the WASM bridge).
+  if (url.pathname === "/api/realtime" && req.method === "GET" && env.REALTIME_DO) {
     const id = env.REALTIME_DO.idFromName("hub");
     const stub = env.REALTIME_DO.get(id);
     return stub.fetch(req);
