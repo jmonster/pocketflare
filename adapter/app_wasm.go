@@ -17,16 +17,6 @@ import (
 	"github.com/pocketflare/pocketflare/adapter/wasmdb"
 )
 
-// Config defines the configuration for creating a PocketBase Workers app.
-type Config struct {
-	AppName       string
-	AppURL        string
-	AdminEmail    string
-	AdminPassword string
-	DataDir       string // usually "/tmp/pb_data" -- NOT persisted on Workers
-	AppMigrations core.MigrationsList
-}
-
 // New creates a new PocketBase app pre-configured for the Workers runtime.
 //
 // It bootstraps the app, runs all migrations, builds the API router with

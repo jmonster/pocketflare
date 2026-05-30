@@ -13,16 +13,6 @@ import (
 	"github.com/pocketbase/pocketbase/ui"
 )
 
-// Config defines the configuration for creating a PocketBase app.
-type Config struct {
-	AppName       string
-	AppURL        string
-	AdminEmail    string
-	AdminPassword string
-	DataDir       string
-	AppMigrations core.MigrationsList
-}
-
 // New creates a new PocketBase app for local development.
 func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEvent], error) {
 	pb := pocketbase.NewWithConfig(pocketbase.Config{
