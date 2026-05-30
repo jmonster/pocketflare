@@ -106,4 +106,3 @@ After database and files are migrated:
 - No automated S3-to-R2 migration wrapper is checked in yet.
 - No direct browser-to-R2 upload flow exists yet.
 - No signed R2 download redirect exists yet.
-- Large uploads/copies should avoid the current Go memory-buffered adapter path until R2 multipart/server-side copy work lands.
