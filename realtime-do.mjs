@@ -43,6 +43,7 @@ export class RealtimeDO {
 
     request.signal.addEventListener("abort", () => {
       this.connections.delete(clientId);
+      this.ctx.storage.delete(`sub:${clientId}`).catch(() => {});
       writer.close().catch(() => {});
     });
 
@@ -90,6 +91,7 @@ export class RealtimeDO {
       await conn.writer.write(encoder.encode(msg));
     } catch {
       this.connections.delete(clientId);
+      this.ctx.storage.delete(`sub:${clientId}`).catch(() => {});
       return new Response("write failed", { status: 500 });
     }
 
@@ -106,14 +108,15 @@ export class RealtimeDO {
       return new Response("invalid json", { status: 400 });
     }
 
-    const { clientId, subscriptions, auth } = body;
+    const { clientId, subscriptions, authRecordId, authCollectionName } = body;
     if (!clientId) {
       return new Response("missing clientId", { status: 400 });
     }
 
     await this.ctx.storage.put(`sub:${clientId}`, {
       subscriptions: subscriptions || [],
-      auth: auth || null,
+      authRecordId: authRecordId || "",
+      authCollectionName: authCollectionName || "",
       updatedAt: Date.now(),
     });
 
