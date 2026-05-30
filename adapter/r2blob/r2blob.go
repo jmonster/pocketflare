@@ -34,7 +34,7 @@ func (d *Driver) NormalizeError(err error) error {
 
 // Attributes returns metadata for the object at key.
 // Returns blob.ErrNotFound if the object does not exist.
-func (d *Driver) Attributes(_ context.Context, key string) (*blob.Attributes, error) {
+func (d *Driver) Attributes(ctx context.Context, key string) (*blob.Attributes, error) {
 	p := d.bucket.Call("head", key)
 	v, err := jsutil.AwaitPromise(ctx, p)
 	if err != nil {
@@ -47,7 +47,7 @@ func (d *Driver) Attributes(_ context.Context, key string) (*blob.Attributes, er
 }
 
 // ListPaged lists objects in the bucket with optional prefix/delimiter/cursor pagination.
-func (d *Driver) ListPaged(_ context.Context, opts *blob.ListOptions) (*blob.ListPage, error) {
+func (d *Driver) ListPaged(ctx context.Context, opts *blob.ListOptions) (*blob.ListPage, error) {
 	jsOpts := newJSObject()
 	if opts.PageSize > 0 {
 		jsOpts.Set("limit", opts.PageSize)
@@ -74,7 +74,7 @@ func (d *Driver) ListPaged(_ context.Context, opts *blob.ListOptions) (*blob.Lis
 // NewRangeReader returns a reader for the object at key, reading at most length
 // bytes starting at offset. If length is negative, reads to the end of the object.
 // Returns blob.ErrNotFound if the object does not exist.
-func (d *Driver) NewRangeReader(_ context.Context, key string, offset, length int64) (blob.DriverReader, error) {
+func (d *Driver) NewRangeReader(ctx context.Context, key string, offset, length int64) (blob.DriverReader, error) {
 	var p js.Value
 	if offset == 0 && length == -1 {
 		p = d.bucket.Call("get", key)
@@ -124,7 +124,7 @@ func (d *Driver) NewTypedWriter(_ context.Context, key, contentType string, opts
 // Copy copies the object from srcKey to dstKey using a Get+Put fallback,
 // since the Workers R2 bindings do not expose a server-side copy.
 // Returns blob.ErrNotFound if the source does not exist.
-func (d *Driver) Copy(_ context.Context, dstKey, srcKey string) error {
+func (d *Driver) Copy(ctx context.Context, dstKey, srcKey string) error {
 	p := d.bucket.Call("get", srcKey)
 	v, err := jsutil.AwaitPromise(ctx, p)
 	if err != nil {
@@ -159,7 +159,7 @@ func (d *Driver) Copy(_ context.Context, dstKey, srcKey string) error {
 }
 
 // Delete removes the object at key.
-func (d *Driver) Delete(_ context.Context, key string) error {
+func (d *Driver) Delete(ctx context.Context, key string) error {
 	p := d.bucket.Call("delete", key)
 	_, err := jsutil.AwaitPromise(ctx, p)
 	return err

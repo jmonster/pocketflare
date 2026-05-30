@@ -39,14 +39,13 @@ pocketflare/
 ├── OVERVIEW.md
 │
 ├── adapter/
-│   ├── app_wasm.go / app_native.go  # Bootstrap + superuser creation
+│   ├── app.go                       # Bootstrap + superuser creation (WASM-only)
 │   ├── wasmdb/db.go                 # D1 DBConnect
 │   ├── wasmdb/driver.go             # No-op Tx wrapper
 │   └── r2blob/r2blob.go             # R2 blob.Driver
 │
 ├── cmd/pocketflare/
-│   ├── main_wasm.go                 # workers.Serve() entry point
-│   └── main_native.go               # http.ListenAndServe() for dev
+│   └── main.go                      # workers.Serve() entry point
 │
 ├── patches/
 │   ├── 001-bootstrap-wasm.patch     # OS ops extraction
