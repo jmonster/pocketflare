@@ -309,6 +309,7 @@ func strRecordToMap(v js.Value) map[string]string {
 type readableStreamToReadCloser struct {
 	stream js.Value
 	reader js.Value
+	buf    []byte // unconsumed bytes from the current JS chunk
 }
 
 func convertReadableStreamToReadCloser(stream js.Value) io.ReadCloser {
@@ -320,6 +321,13 @@ func convertReadableStreamToReadCloser(stream js.Value) io.ReadCloser {
 }
 
 func (r *readableStreamToReadCloser) Read(p []byte) (n int, err error) {
+	// Drain buffered data from a previous chunk first.
+	if len(r.buf) > 0 {
+		n = copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+
 	promise := r.reader.Call("read")
 	result, err := jsutil.AwaitPromise(context.Background(), promise)
 	if err != nil {
@@ -333,18 +341,24 @@ func (r *readableStreamToReadCloser) Read(p []byte) (n int, err error) {
 	if chunk.IsUndefined() || chunk.IsNull() {
 		return 0, io.EOF
 	}
-	// chunk is an ArrayBuffer or typed array
+
+	// Read the entire chunk into a Go-owned buffer so that bytes
+	// are never lost when len(p) is smaller than the JS chunk.
 	length := chunk.Get("byteLength").Int()
-	if length > len(p) {
-		length = len(p)
+	if length > 0 {
+		tmp := js.Global().Get("Uint8Array").New(chunk)
+		r.buf = make([]byte, length)
+		js.CopyBytesToGo(r.buf, tmp)
 	}
-	// Create a Uint8Array view of the chunk and copy bytes
-	tmp := js.Global().Get("Uint8Array").New(chunk)
-	n = js.CopyBytesToGo(p[:length], tmp)
+
+	// Drain into caller's buffer.
+	n = copy(p, r.buf)
+	r.buf = r.buf[n:]
 	return n, nil
 }
 
 func (r *readableStreamToReadCloser) Close() error {
+	r.buf = nil
 	promise := r.reader.Call("cancel")
 	_, err := jsutil.AwaitPromise(context.Background(), promise)
 	return err

@@ -82,8 +82,6 @@ app.Start()
 **After:**
 ```go
 pb, router, _ := adapter.New(adapter.Config{
-    AppName:       "myapp",
-    AppURL:        "https://myapp.workers.dev",
     DataDir:       "/tmp/pb_data",
     AdminEmail:    "admin@example.com",
     AdminPassword: "changeme123",

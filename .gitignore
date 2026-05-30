@@ -37,3 +37,6 @@ internal/pocketbase/
 # Archives
 *.zip
 *.tar.gz
+
+testapp/*.wasm
+testapp/testapp

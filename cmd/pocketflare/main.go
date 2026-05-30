@@ -11,8 +11,6 @@ import (
 
 func main() {
 	pb, router, err := adapter.New(adapter.Config{
-		AppName:       "pocketflare",
-		AppURL:        "http://localhost:8787",
 		DataDir:       "/tmp/pb_data",
 		AdminEmail:    "admin@test.com",
 		AdminPassword: "test123456",

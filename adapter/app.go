@@ -80,8 +80,11 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 				e.Response.Header().Set("Cache-Control", "max-age=1209600, stale-while-revalidate=86400")
 			}
 			return e.Next()
-		}).
-		Bind(apis.Gzip())
+		})
+
+	// Gzip is intentionally NOT bound on the admin route — under syumai/workers
+	// the Content-Encoding header from the gzip middleware does not survive the
+	// jshttp.ResponseWriter bridge, producing gzip bytes with no compression header.
 
 	return pb, pbRouter, nil
 }
