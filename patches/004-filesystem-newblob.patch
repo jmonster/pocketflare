@@ -1,0 +1,105 @@
+From 348b12f5613b7cd90ea2704ed77f7adb1a49a124 Mon Sep 17 00:00:00 2001
+From: Johnny D <goforjohnny@icloud.com>
+Date: Sat, 30 May 2026 02:52:04 -0400
+Subject: [PATCH 5/5] filesystem: add NewBlob constructor, restore image
+ processing
+
+NewBlob(drv blob.Driver) allows injecting arbitrary blob.Driver backends
+(used by the WASM build for R2). Image processing (CreateThumb via
+disintegration/imaging) is preserved for full feature parity.
+---
+ tools/filesystem/filesystem.go | 20 +++++++-------------
+ 1 file changed, 7 insertions(+), 13 deletions(-)
+
+diff --git a/tools/filesystem/filesystem.go b/tools/filesystem/filesystem.go
+index c756c4a..f0dcbf8 100644
+--- a/tools/filesystem/filesystem.go
++++ b/tools/filesystem/filesystem.go
+@@ -24,7 +24,6 @@ import (
+ 	"github.com/pocketbase/pocketbase/tools/filesystem/internal/s3blob/s3"
+ 	"github.com/pocketbase/pocketbase/tools/list"
+ 
+-	// explicit webp decoder because disintegration/imaging does not support webp
+ 	_ "golang.org/x/image/webp"
+ )
+ 
+@@ -68,6 +67,13 @@ func NewS3(
+ 	return &System{ctx: ctx, bucket: blob.NewBucket(drv)}, nil
+ }
+ 
++// NewBlob initializes a new filesystem instance backed by the given blob.Driver.
++//
++// NB! Make sure to call `Close()` after you are done working with it.
++func NewBlob(drv blob.Driver) *System {
++	return &System{ctx: context.Background(), bucket: blob.NewBucket(drv)}
++}
++
+ // NewLocal initializes a new local filesystem instance.
+ //
+ // NB! Make sure to call `Close()` after you are done working with it.
+@@ -500,15 +506,12 @@ func (s *System) CreateThumb(originalKey string, thumbKey, thumbSize string) err
+ 		return errors.New("thumb width and height cannot be zero at the same time")
+ 	}
+ 
+-	// fetch the original
+ 	r, readErr := s.GetReader(originalKey)
+ 	if readErr != nil {
+ 		return readErr
+ 	}
+ 	defer r.Close()
+ 
+-	// create imaging object from the original reader
+-	// (note: only the first frame for animated image formats)
+ 	img, decodeErr := imaging.Decode(r, imaging.AutoOrientation(true))
+ 	if decodeErr != nil {
+ 		return decodeErr
+@@ -517,21 +520,16 @@ func (s *System) CreateThumb(originalKey string, thumbKey, thumbSize string) err
+ 	var thumbImg *image.NRGBA
+ 
+ 	if width == 0 || height == 0 {
+-		// force resize preserving aspect ratio
+ 		thumbImg = imaging.Resize(img, width, height, imaging.Linear)
+ 	} else {
+ 		switch resizeType {
+ 		case "f":
+-			// fit
+ 			thumbImg = imaging.Fit(img, width, height, imaging.Linear)
+ 		case "t":
+-			// fill and crop from top
+ 			thumbImg = imaging.Fill(img, width, height, imaging.Top, imaging.Linear)
+ 		case "b":
+-			// fill and crop from bottom
+ 			thumbImg = imaging.Fill(img, width, height, imaging.Bottom, imaging.Linear)
+ 		default:
+-			// fill and crop from center
+ 			thumbImg = imaging.Fill(img, width, height, imaging.Center, imaging.Linear)
+ 		}
+ 	}
+@@ -554,24 +552,20 @@ func (s *System) CreateThumb(originalKey string, thumbKey, thumbSize string) err
+ 	case "image/bmp":
+ 		format = imaging.BMP
+ 	default:
+-		// fallback to PNG (this includes webp!)
+ 		opts.ContentType = "image/png"
+ 		format = imaging.PNG
+ 	}
+ 
+-	// open a thumb storage writer (aka. prepare for upload)
+ 	w, err := s.bucket.NewWriter(s.ctx, thumbKey, opts)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	// thumb encode (aka. upload)
+ 	err = imaging.Encode(w, thumbImg, format)
+ 	if err != nil {
+ 		w.Close()
+ 		return err
+ 	}
+ 
+-	// check for close errors to ensure that the thumb was really saved
+ 	return w.Close()
+ }
+-- 
+2.50.1 (Apple Git-155)
+

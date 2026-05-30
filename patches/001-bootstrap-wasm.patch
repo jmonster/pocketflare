@@ -1,0 +1,145 @@
+From 4a36e0be881b0a7298efb7aaddda731525ce7816 Mon Sep 17 00:00:00 2001
+From: Johnny D <goforjohnny@icloud.com>
+Date: Sat, 30 May 2026 02:51:26 -0400
+Subject: [PATCH 2/5] wasm: extract Bootstrap OS ops to build-tagged files
+
+Extract os.MkdirAll/os.RemoveAll into prepareDataDir() and fsnotify hook
+registration into registerNotifyWatcherHooks(). WASM build provides no-ops;
+native build keeps the original behavior.
+---
+ core/base.go      | 49 ++---------------------------------------------
+ core/base_unix.go | 23 ++++++++++++++++++++++
+ core/base_wasm.go | 10 ++++++++++
+ 3 files changed, 35 insertions(+), 47 deletions(-)
+ create mode 100644 core/base_unix.go
+ create mode 100644 core/base_wasm.go
+
+diff --git a/core/base.go b/core/base.go
+index e932eb1..446abab 100644
+--- a/core/base.go
++++ b/core/base.go
+@@ -17,7 +17,6 @@ import (
+ 	"github.com/fatih/color"
+ 	"github.com/pocketbase/dbx"
+ 	"github.com/pocketbase/pocketbase/tools/cron"
+-	"github.com/pocketbase/pocketbase/tools/filesystem"
+ 	"github.com/pocketbase/pocketbase/tools/hook"
+ 	"github.com/pocketbase/pocketbase/tools/logger"
+ 	"github.com/pocketbase/pocketbase/tools/mailer"
+@@ -398,7 +397,7 @@ func (app *BaseApp) Bootstrap() error {
+ 		}
+ 
+ 		// ensure that data dir exist
+-		if err := os.MkdirAll(app.DataDir(), os.ModePerm); err != nil {
++		if err := app.prepareDataDir(); err != nil {
+ 			return err
+ 		}
+ 
+@@ -426,8 +425,7 @@ func (app *BaseApp) Bootstrap() error {
+ 			return err
+ 		}
+ 
+-		// try to cleanup the pb_data temp directory (if any)
+-		_ = os.RemoveAll(filepath.Join(app.DataDir(), LocalTempDirName))
++		app.registerNotifyWatcherHooks()
+ 
+ 		return nil
+ 	})
+@@ -705,49 +703,6 @@ func (app *BaseApp) NewMailClient() mailer.Mailer {
+ 	return client
+ }
+ 
+-// NewFilesystem creates a new local or S3 filesystem instance
+-// for managing regular app files (ex. record uploads)
+-// based on the current app settings.
+-//
+-// NB! Make sure to call Close() on the returned result
+-// after you are done working with it.
+-func (app *BaseApp) NewFilesystem() (*filesystem.System, error) {
+-	if app.settings != nil && app.settings.S3.Enabled {
+-		return filesystem.NewS3(
+-			app.settings.S3.Bucket,
+-			app.settings.S3.Region,
+-			app.settings.S3.Endpoint,
+-			app.settings.S3.AccessKey,
+-			app.settings.S3.Secret,
+-			app.settings.S3.ForcePathStyle,
+-		)
+-	}
+-
+-	// fallback to local filesystem
+-	return filesystem.NewLocal(filepath.Join(app.DataDir(), LocalStorageDirName))
+-}
+-
+-// NewBackupsFilesystem creates a new local or S3 filesystem instance
+-// for managing app backups based on the current app settings.
+-//
+-// NB! Make sure to call Close() on the returned result
+-// after you are done working with it.
+-func (app *BaseApp) NewBackupsFilesystem() (*filesystem.System, error) {
+-	if app.settings != nil && app.settings.Backups.S3.Enabled {
+-		return filesystem.NewS3(
+-			app.settings.Backups.S3.Bucket,
+-			app.settings.Backups.S3.Region,
+-			app.settings.Backups.S3.Endpoint,
+-			app.settings.Backups.S3.AccessKey,
+-			app.settings.Backups.S3.Secret,
+-			app.settings.Backups.S3.ForcePathStyle,
+-		)
+-	}
+-
+-	// fallback to local filesystem
+-	return filesystem.NewLocal(filepath.Join(app.DataDir(), LocalBackupsDirName))
+-}
+-
+ // Restart restarts (aka. replaces) the current running application process.
+ //
+ // NB! It relies on execve which is supported only on UNIX based systems.
+diff --git a/core/base_unix.go b/core/base_unix.go
+new file mode 100644
+index 0000000..8004e84
+--- /dev/null
++++ b/core/base_unix.go
+@@ -0,0 +1,23 @@
++//go:build !js
++
++package core
++
++import (
++	"os"
++	"path/filepath"
++)
++
++func (app *BaseApp) prepareDataDir() error {
++	dataDir := app.DataDir()
++	if err := os.MkdirAll(dataDir, os.ModePerm); err != nil {
++		return err
++	}
++	// try to cleanup the pb_data temp directory (if any)
++	_ = os.RemoveAll(filepath.Join(dataDir, LocalTempDirName))
++
++	return nil
++}
++
++func (app *BaseApp) registerNotifyWatcherHooks() {
++	// no fsnotify hooks to register in this version
++}
+diff --git a/core/base_wasm.go b/core/base_wasm.go
+new file mode 100644
+index 0000000..62b378e
+--- /dev/null
++++ b/core/base_wasm.go
+@@ -0,0 +1,10 @@
++//go:build js && wasm
++
++package core
++
++func (app *BaseApp) prepareDataDir() error {
++	return nil
++}
++
++func (app *BaseApp) registerNotifyWatcherHooks() {
++}
+-- 
+2.50.1 (Apple Git-155)
+
