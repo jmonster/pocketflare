@@ -5,6 +5,8 @@ go 1.26.1
 replace github.com/pocketbase/pocketbase => ./internal/pocketbase
 
 require (
+	github.com/domodwyer/mailyak/v3 v3.6.2
+	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/pocketbase/dbx v1.12.0
 	github.com/pocketbase/pocketbase v0.0.0-00010101000000-000000000000
 	github.com/syumai/workers v0.33.0
@@ -13,10 +15,8 @@ require (
 require (
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
-	github.com/domodwyer/mailyak/v3 v3.6.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fatih/color v1.19.0 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/ganigeorgiev/fexpr v0.5.0 // indirect
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
