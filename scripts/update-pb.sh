@@ -12,8 +12,12 @@ echo "Fetching PocketBase ${VERSION}..."
 if [ -d "$PB_DIR/.git" ]; then
     cd "$PB_DIR"
     git fetch --depth 1 origin "refs/tags/${VERSION}:refs/tags/${VERSION}" 2>/dev/null || true
-    git checkout -- . 2>/dev/null || true
-    git clean -fd 2>/dev/null || true
+    if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+        echo "ERROR: internal/pocketbase working tree is dirty." >&2
+        echo "  Stash or commit your changes, or run: git checkout -- . && git clean -fd" >&2
+        echo "  inside internal/pocketbase, then re-run this script." >&2
+        exit 1
+    fi
     git checkout "${VERSION}" 2>/dev/null || {
         echo "Tag ${VERSION} not found locally; cloning fresh..."
         rm -rf "$PB_DIR"
