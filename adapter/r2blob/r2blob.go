@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/tools/filesystem/blob"
+	"github.com/pocketflare/pocketflare/adapter/internal/jsutil"
 	"github.com/syumai/workers/cloudflare"
 )
 
@@ -35,7 +36,7 @@ func (d *Driver) NormalizeError(err error) error {
 // Returns blob.ErrNotFound if the object does not exist.
 func (d *Driver) Attributes(_ context.Context, key string) (*blob.Attributes, error) {
 	p := d.bucket.Call("head", key)
-	v, err := awaitPromise(ctx, p)
+	v, err := jsutil.AwaitPromise(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func (d *Driver) ListPaged(_ context.Context, opts *blob.ListOptions) (*blob.Lis
 	}
 
 	p := d.bucket.Call("list", jsOpts)
-	v, err := awaitPromise(ctx, p)
+	v, err := jsutil.AwaitPromise(ctx, p)
 	if err != nil {
 		return nil, fmt.Errorf("r2 list: %w", err)
 	}
@@ -88,7 +89,7 @@ func (d *Driver) NewRangeReader(_ context.Context, key string, offset, length in
 		p = d.bucket.Call("get", key, jsOpts)
 	}
 
-	v, err := awaitPromise(ctx, p)
+	v, err := jsutil.AwaitPromise(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +126,7 @@ func (d *Driver) NewTypedWriter(_ context.Context, key, contentType string, opts
 // Returns blob.ErrNotFound if the source does not exist.
 func (d *Driver) Copy(_ context.Context, dstKey, srcKey string) error {
 	p := d.bucket.Call("get", srcKey)
-	v, err := awaitPromise(ctx, p)
+	v, err := jsutil.AwaitPromise(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -150,7 +151,7 @@ func (d *Driver) Copy(_ context.Context, dstKey, srcKey string) error {
 	ua := newUint8Array(len(data))
 	js.CopyBytesToJS(ua, data)
 	p2 := d.bucket.Call("put", dstKey, ua.Get("buffer"), putOpts)
-	_, err = awaitPromise(ctx, p2)
+	_, err = jsutil.AwaitPromise(ctx, p2)
 	if err != nil {
 		return fmt.Errorf("r2 copy write: %w", err)
 	}
@@ -160,7 +161,7 @@ func (d *Driver) Copy(_ context.Context, dstKey, srcKey string) error {
 // Delete removes the object at key.
 func (d *Driver) Delete(_ context.Context, key string) error {
 	p := d.bucket.Call("delete", key)
-	_, err := awaitPromise(ctx, p)
+	_, err := jsutil.AwaitPromise(ctx, p)
 	return err
 }
 
@@ -241,7 +242,7 @@ func (w *r2Writer) Close() error {
 	putOpts.Set("httpMetadata", httpMeta)
 
 	p := w.driver.bucket.Call("put", w.key, ua.Get("buffer"), putOpts)
-	_, err := awaitPromise(context.Background(), p)
+	_, err := jsutil.AwaitPromise(context.Background(), p)
 	return err
 }
 
@@ -253,44 +254,6 @@ type httpMetadataFields struct {
 	ContentEncoding    string
 	CacheControl       string
 	CacheExpiry        time.Time
-}
-
-// ---------------------------------------------------------------------------
-// JS interop helpers (inlined to avoid importing internal syumai/workers packages)
-// ---------------------------------------------------------------------------
-
-// awaitPromise blocks on a JavaScript Promise and returns its result or error.
-// The ctx is used for timeout/cancellation. If ctx expires before the Promise
-// settles, awaitPromise returns ctx.Err(). Both js.Func values are guaranteed
-// released on return regardless of which callback fires.
-func awaitPromise(ctx context.Context, promise js.Value) (js.Value, error) {
-	// Buffered so late-settling Promises don't block the JS goroutine.
-	resultCh := make(chan js.Value, 1)
-	errCh := make(chan error, 1)
-
-	then := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		resultCh <- args[0]
-		return js.Undefined()
-	})
-	catch := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		errCh <- fmt.Errorf("promise rejected: %s", args[0].Call("toString").String())
-		return js.Undefined()
-	})
-	// Always release both Funcs — in the happy path, after one callback fires,
-	// and on ctx expiry after neither fires.
-	defer then.Release()
-	defer catch.Release()
-
-	promise.Call("then", then).Call("catch", catch)
-
-	select {
-	case result := <-resultCh:
-		return result, nil
-	case err := <-errCh:
-		return js.Undefined(), err
-	case <-ctx.Done():
-		return js.Undefined(), ctx.Err()
-	}
 }
 
 // newJSObject creates a new JavaScript Object.
@@ -358,7 +321,7 @@ func convertReadableStreamToReadCloser(stream js.Value) io.ReadCloser {
 
 func (r *readableStreamToReadCloser) Read(p []byte) (n int, err error) {
 	promise := r.reader.Call("read")
-	result, err := awaitPromise(context.Background(), promise)
+	result, err := jsutil.AwaitPromise(context.Background(), promise)
 	if err != nil {
 		return 0, err
 	}
@@ -383,7 +346,7 @@ func (r *readableStreamToReadCloser) Read(p []byte) (n int, err error) {
 
 func (r *readableStreamToReadCloser) Close() error {
 	promise := r.reader.Call("cancel")
-	_, err := awaitPromise(context.Background(), promise)
+	_, err := jsutil.AwaitPromise(context.Background(), promise)
 	return err
 }
 
