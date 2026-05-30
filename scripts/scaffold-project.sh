@@ -136,11 +136,8 @@ compatibility_date = "2025-05-30"
 [vars]
 POCKETFLARE_APP_URL = "$(toml_escape "$app_url")"
 
-# Optional: override the R2 bucket names used at runtime.
-# By default the [[r2_buckets]] bindings below are used; these vars let you
-# point the application at different buckets without redeploying the binding.
-# POCKETFLARE_STORAGE_BUCKET_NAME = "$(toml_escape "$storage_bucket")"
-# POCKETFLARE_BACKUPS_BUCKET_NAME = "$(toml_escape "$backups_bucket")"
+POCKETFLARE_STORAGE_BUCKET_NAME = "$(toml_escape "$storage_bucket")"
+POCKETFLARE_BACKUPS_BUCKET_NAME = "$(toml_escape "$backups_bucket")"
 
 # Optional: enable server-side R2 CopyObject for large file copies.
 # When unset, file copies stream through the Worker with bounded memory.
