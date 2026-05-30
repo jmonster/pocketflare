@@ -29,7 +29,7 @@ Thumbs.db
 *.exe
 *.test
 *.out
-pocketflare
+/pocketflare
 
 # PocketBase source (managed by scripts/update-pb.sh)
 internal/pocketbase/
