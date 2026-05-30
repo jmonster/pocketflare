@@ -62,6 +62,14 @@ pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_TOKEN
 
 Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then PocketBase admin SMTP settings. Use HTTP providers or the webhook for production until SMTP sockets are proven against your provider.
 
+Amazon SES SMTP credentials use a derived SMTP password, not the raw 40-character AWS secret access key. After creating SES SMTP credentials for the same region as your SMTP endpoint, convert the secret locally:
+
+```sh
+node scripts/ses-smtp-password.mjs '<aws-secret-access-key>' us-east-1
+```
+
+In PocketBase SMTP settings, use the `AKIA...` access key ID as the username and the script output as the password. For `email-smtp.us-east-1.amazonaws.com`, use region `us-east-1`.
+
 ## Cloudflare Bindings
 
 Required bindings in `wrangler.toml`:
