@@ -378,7 +378,7 @@ func (d *Driver) streamingCopy(ctx context.Context, dstKey, srcKey string) error
 	// Ref: https://github.com/cloudflare/workers-sdk/issues/6425
 	sizeVal := v.Get("size").Int()
 	fls := js.Global().Get("FixedLengthStream").New(sizeVal)
-	body.Call("pipeTo", fls.Get("writable"))
+	pipePromise := body.Call("pipeTo", fls.Get("writable"))
 	readable := fls.Get("readable")
 
 	putOpts := copyPutOpts(v)
@@ -386,6 +386,11 @@ func (d *Driver) streamingCopy(ctx context.Context, dstKey, srcKey string) error
 	_, err = jsutil.AwaitPromise(ctx, p2)
 	if err != nil {
 		return fmt.Errorf("r2 streaming copy write: %w", err)
+	}
+	// Surface source-stream failures that the put may have consumed
+	// successfully but were errors nonetheless.
+	if _, err := jsutil.AwaitPromise(ctx, pipePromise); err != nil {
+		return fmt.Errorf("r2 streaming copy pipe: %w", err)
 	}
 	return nil
 }
