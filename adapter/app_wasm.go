@@ -24,6 +24,7 @@ type Config struct {
 	AdminEmail    string
 	AdminPassword string
 	DataDir       string // usually "/tmp/pb_data" -- NOT persisted on Workers
+	AppMigrations core.MigrationsList
 }
 
 // New creates a new PocketBase app pre-configured for the Workers runtime.
@@ -49,6 +50,9 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	if err := pb.Bootstrap(); err != nil {
 		return nil, nil, fmt.Errorf("bootstrap: %w", err)
 	}
+
+	// Inject user-defined Go migrations before running all migrations.
+	core.AppMigrations.Copy(config.AppMigrations)
 
 	if err := pb.RunAllMigrations(); err != nil {
 		return nil, nil, fmt.Errorf("migrations: %w", err)

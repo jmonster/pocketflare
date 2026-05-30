@@ -20,6 +20,7 @@ type Config struct {
 	AdminEmail    string
 	AdminPassword string
 	DataDir       string
+	AppMigrations core.MigrationsList
 }
 
 // New creates a new PocketBase app for local development.
@@ -32,6 +33,9 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	if err := pb.Bootstrap(); err != nil {
 		return nil, nil, err
 	}
+
+	// Inject user-defined Go migrations before running all migrations.
+	core.AppMigrations.Copy(config.AppMigrations)
 
 	if err := pb.RunAllMigrations(); err != nil {
 		return nil, nil, err
