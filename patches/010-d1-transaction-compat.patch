@@ -1,0 +1,417 @@
+diff --git a/apis/sql.go b/apis/sql.go
+index 8cdd52a..1db91f9 100644
+--- a/apis/sql.go
++++ b/apis/sql.go
+@@ -114,19 +114,36 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 	// assume write/mutation query
+ 	// ---------------------------------------------------------------
+ 	if isPossibleWriteQuery {
+-		// auto wrap in transaction in case there are multiple inline queries
+-		txErr := app.RunInTransaction(func(txApp core.App) error {
+-			execResult, err := txApp.NonconcurrentDB().NewQuery(query).WithContext(ctx).Execute()
+-			if err != nil {
+-				return err
++		// Split multi-statement queries by ";" so each becomes a
++		// separate queued write in the D1 batch transaction.
++		// D1 prepare() accepts only single statements.
++		statements := splitSQLStatements(query)
++
++		// Reject mixed read+write batches — the driver cannot
++		// interleave SELECT with queued writes inside a tx.
++		for _, stmt := range statements {
++			ucStmt := strings.ToUpper(strings.TrimSpace(stmt))
++			if strings.HasPrefix(ucStmt, "SELECT") || strings.HasPrefix(ucStmt, "PRAGMA") {
++				return nil, errors.New("mixed read/write SQL is not supported in a single request on D1; send read-only queries separately")
+ 			}
++		}
+ 
+-			result.AffectedRows, err = execResult.RowsAffected()
+-			if err != nil {
+-				// non-critical error (e.g. not supported by the driver)
+-				txApp.Logger().Debug("Unable to fetch affected rows", slog.String("error", err.Error()))
++		txErr := app.RunInTransaction(func(txApp core.App) error {
++			var totalAffected int64
++			for _, stmt := range statements {
++				execResult, execErr := txApp.NonconcurrentDB().NewQuery(stmt).WithContext(ctx).Execute()
++				if execErr != nil {
++					return execErr
++				}
++
++				n, err := execResult.RowsAffected()
++				if err != nil {
++					txApp.Logger().Debug("Unable to fetch affected rows", slog.String("error", err.Error()))
++				} else {
++					totalAffected += n
++				}
+ 			}
+-
++			result.AffectedRows = totalAffected
+ 			return nil
+ 		})
+ 		if txErr != nil {
+@@ -189,3 +206,17 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 
+ 	return result, nil
+ }
++
++// splitSQLStatements splits a SQL string on ";" delimiters,
++// skipping empty segments and trimming whitespace.
++func splitSQLStatements(query string) []string {
++	parts := strings.Split(query, ";")
++	out := make([]string, 0, len(parts))
++	for _, p := range parts {
++		p = strings.TrimSpace(p)
++		if p != "" {
++			out = append(out, p)
++		}
++	}
++	return out
++}
+diff --git a/core/collection_model.go b/core/collection_model.go
+index fff6241..c7368b9 100644
+--- a/core/collection_model.go
++++ b/core/collection_model.go
+@@ -710,11 +710,28 @@ func onCollectionDeleteExecute(e *CollectionEvent) error {
+ 		}
+ 	}
+ 
++	// check view dependencies outside the transaction.
++	// On D1 we cannot query after queued writes (DROP TABLE),
++	// so dependency detection must run before entering the tx.
++	if !e.Collection.disableIntegrityChecks {
++		if err := checkViewDependencies(e.App, e.Collection); err != nil {
++			return err
++		}
++	}
++
+ 	originalApp := e.App
+ 
+ 	txErr := e.App.RunInTransaction(func(txApp App) error {
+ 		e.App = txApp
+ 
++		// resave dependent views before DROP TABLE so all
++		// queries run before any write is queued.
++		if !e.Collection.disableIntegrityChecks {
++			if err := resaveViewsWithChangedFields(txApp, e.Collection.Id); err != nil {
++				return fmt.Errorf("[%s] failed to delete due to existing view dependency: %w", e.Collection.Name, err)
++			}
++		}
++
+ 		// delete the related view or records table
+ 		if e.Collection.IsView() {
+ 			if err := txApp.DeleteView(e.Collection.Name); err != nil {
+@@ -726,13 +743,6 @@ func onCollectionDeleteExecute(e *CollectionEvent) error {
+ 			}
+ 		}
+ 
+-		if !e.Collection.disableIntegrityChecks {
+-			// trigger views resave to check for dependencies
+-			if err := resaveViewsWithChangedFields(txApp, e.Collection.Id); err != nil {
+-				return fmt.Errorf("[%s] failed to delete due to existing view dependency: %w", e.Collection.Name, err)
+-			}
+-		}
+-
+ 		// delete
+ 		return e.Next()
+ 	})
+@@ -865,22 +875,31 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 		}
+ 	}
+ 
++	// Precompute view fields and normalized query outside the write
++	// transaction so D1 batch mode doesn't hit query-after-write.
++	// CreateViewFields and normalizeViewQueryId use temp views that
++	// run in their own short-lived transaction.
++	var viewFields FieldsList
++	var normalizedViewQuery string
++	if e.Collection.IsView() {
++		var err error
++		viewFields, err = e.App.CreateViewFields(e.Collection.ViewQuery)
++		if err != nil {
++			return err
++		}
++		normalizedViewQuery, err = normalizeViewQueryId(e.App, e.Collection.ViewQuery)
++		if err != nil {
++			return fmt.Errorf("failed to normalize view query id: %w", err)
++		}
++	}
++
+ 	originalApp := e.App
+ 	txErr := e.App.RunInTransaction(func(txApp App) error {
+ 		e.App = txApp
+ 
+ 		isView := e.Collection.IsView()
+ 
+-		// ensures that the view collection shema is properly loaded
+ 		if isView {
+-			query := e.Collection.ViewQuery
+-
+-			// generate collection fields list from the query
+-			viewFields, err := e.App.CreateViewFields(query)
+-			if err != nil {
+-				return err
+-			}
+-
+ 			// delete old renamed view
+ 			if oldCollection != nil {
+ 				if err := e.App.DeleteView(oldCollection.Name); err != nil {
+@@ -888,14 +907,8 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 				}
+ 			}
+ 
+-			// wrap view query if necessary
+-			query, err = normalizeViewQueryId(e.App, query)
+-			if err != nil {
+-				return fmt.Errorf("failed to normalize view query id: %w", err)
+-			}
+-
+ 			// (re)create the view
+-			if err := e.App.SaveView(e.Collection.Name, query); err != nil {
++			if err := e.App.SaveView(e.Collection.Name, normalizedViewQuery); err != nil {
+ 				return err
+ 			}
+ 
+diff --git a/core/collection_query.go b/core/collection_query.go
+index b19bb55..be5f3fd 100644
+--- a/core/collection_query.go
++++ b/core/collection_query.go
+@@ -334,58 +334,114 @@ func normalizeViewQueryId(app App, query string) (string, error) {
+ 	return query, nil
+ }
+ 
++// checkViewDependencies returns an error if any view collection's query
++// references the named collection. This uses a simple substring scan of
++// ViewQuery and may produce false positives for names that appear in
++// literals, comments, or substrings. It runs outside any write transaction
++// so D1 batch mode doesn't hit query-after-write during collection delete.
++func checkViewDependencies(app App, collection *Collection) error {
++	views, err := app.FindAllCollections(CollectionTypeView)
++	if err != nil {
++		return err
++	}
++	for _, v := range views {
++		if v.Id == collection.Id {
++			continue
++		}
++		if strings.Contains(v.ViewQuery, collection.Name) {
++			return fmt.Errorf("[%s] failed to delete due to existing view dependency (%s)", collection.Name, v.Name)
++		}
++	}
++	return nil
++}
++
+ // resaveViewsWithChangedFields updates all view collections with changed fields.
++//
++// Field detection and query normalization run outside a write transaction
++// so D1 batch mode doesn't hit query-after-write. Only the actual saves are batched.
+ func resaveViewsWithChangedFields(app App, excludeIds ...string) error {
+ 	collections, err := app.FindAllCollections(CollectionTypeView)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	return app.RunInTransaction(func(txApp App) error {
+-		for _, collection := range collections {
+-			if len(excludeIds) > 0 && list.ExistInSlice(collection.Id, excludeIds) {
+-				continue
+-			}
++	type viewToResave struct {
++		collection      *Collection
++		newFields       FieldsList
++		normalizedQuery string
++	}
+ 
+-			// clone the existing fields for temp modifications
+-			oldFields, err := collection.Fields.Clone()
+-			if err != nil {
+-				return err
+-			}
++	var needsResave []viewToResave
+ 
+-			// generate new fields from the query
+-			newFields, err := txApp.CreateViewFields(collection.ViewQuery)
+-			if err != nil {
+-				return err
+-			}
++	// Precompute: detect which views need resaving outside any write tx.
++	for _, collection := range collections {
++		if len(excludeIds) > 0 && list.ExistInSlice(collection.Id, excludeIds) {
++			continue
++		}
+ 
+-			// unset the fields' ids to exclude from the comparison
+-			for _, f := range oldFields {
+-				f.SetId("")
+-			}
+-			for _, f := range newFields {
+-				f.SetId("")
+-			}
++		oldFields, err := collection.Fields.Clone()
++		if err != nil {
++			return err
++		}
+ 
+-			encodedNewFields, err := json.Marshal(newFields)
+-			if err != nil {
+-				return err
+-			}
++		newFields, err := app.CreateViewFields(collection.ViewQuery)
++		if err != nil {
++			return err
++		}
+ 
+-			encodedOldFields, err := json.Marshal(oldFields)
+-			if err != nil {
++		for _, f := range oldFields {
++			f.SetId("")
++		}
++		for _, f := range newFields {
++			f.SetId("")
++		}
++
++		encodedNewFields, err := json.Marshal(newFields)
++		if err != nil {
++			return err
++		}
++
++		encodedOldFields, err := json.Marshal(oldFields)
++		if err != nil {
++			return err
++		}
++
++		if bytes.EqualFold(encodedNewFields, encodedOldFields) {
++			continue
++		}
++
++		normalizedQuery, err := normalizeViewQueryId(app, collection.ViewQuery)
++		if err != nil {
++			return fmt.Errorf("failed to normalize view query id for %s: %w", collection.Name, err)
++		}
++
++		needsResave = append(needsResave, viewToResave{
++			collection:      collection,
++			newFields:       newFields,
++			normalizedQuery: normalizedQuery,
++		})
++	}
++
++	if len(needsResave) == 0 {
++		return nil
++	}
++
++	// Batch write: save all changed views in a single transaction.
++	return app.RunInTransaction(func(txApp App) error {
++		for _, vr := range needsResave {
++			if err := txApp.DeleteView(vr.collection.Name); err != nil {
+ 				return err
+ 			}
+-
+-			if bytes.EqualFold(encodedNewFields, encodedOldFields) {
+-				continue // no changes
++			if err := txApp.SaveView(vr.collection.Name, vr.normalizedQuery); err != nil {
++				return err
+ 			}
+-
+-			if err := saveViewCollection(txApp, collection, nil); err != nil {
++			vr.collection.Fields = vr.newFields
++			if err := txApp.Save(vr.collection); err != nil {
+ 				return err
+ 			}
+ 		}
+-
+ 		return nil
+ 	})
+ }
+diff --git a/core/record_model.go b/core/record_model.go
+index 7d578f2..3e472ff 100644
+--- a/core/record_model.go
++++ b/core/record_model.go
+@@ -1487,13 +1487,17 @@ func onRecordDeleteExecute(e *RecordEvent) error {
+ 	txErr := e.App.RunInTransaction(func(txApp App) error {
+ 		e.App = txApp
+ 
+-		// delete the record before the relation references to ensure that there
+-		// will be no "A<->B" relations to prevent deadlock when calling DeleteRecord recursively
+-		if err := e.Next(); err != nil {
++		// Cascade first, then delete the main record.
++		// On SQLite the original ordering (delete first) prevented
++		// A<->B deadlocks in recursive deletes. On D1 writes are
++		// queued for batch() so there is no in-transaction deadlock,
++		// and cascading first keeps all cascade queries before the
++		// main DELETE write, avoiding query-after-write.
++		if err := cascadeRecordDelete(txApp, e.Record, refs); err != nil {
+ 			return err
+ 		}
+ 
+-		return cascadeRecordDelete(txApp, e.Record, refs)
++		return e.Next()
+ 	})
+ 	e.App = originalApp
+ 
+@@ -1514,6 +1518,15 @@ func cascadeRecordDelete(app App, mainRecord *Record, refs map[*Collection][]Fie
+ 		return sortedRefKeys[i].Name < sortedRefKeys[j].Name
+ 	})
+ 
++	// Phase 1: collect all related records across ALL collections
++	// and fields before queuing any writes. This avoids
++	// query-after-write inside the D1 batch transaction.
++	type cascadeBatch struct {
++		refRecords []*Record
++		field      Field
++	}
++	var allBatches []cascadeBatch
++
+ 	for _, refCollection := range sortedRefKeys {
+ 		fields, ok := refs[refCollection]
+ 
+@@ -1543,33 +1556,35 @@ func cascadeRecordDelete(app App, mainRecord *Record, refs map[*Collection][]Fie
+ 				query.AndWhere(dbx.Not(dbx.HashExp{recordTableName + ".id": mainRecord.Id}))
+ 			}
+ 
+-			// trigger cascade for each batchSize rel items until there is none
+ 			batchSize := 4000
+-			rows := make([]*Record, 0, batchSize)
++			var collected []*Record
+ 			for {
+-				if err := query.Limit(int64(batchSize)).All(&rows); err != nil {
++				batch := make([]*Record, 0, batchSize)
++				if err := query.Limit(int64(batchSize)).All(&batch); err != nil {
+ 					return err
+ 				}
+-
+-				total := len(rows)
+-				if total == 0 {
++				if len(batch) == 0 {
+ 					break
+ 				}
+-
+-				err := deleteRefRecords(app, mainRecord, rows, field)
+-				if err != nil {
+-					return err
+-				}
+-
+-				if total < batchSize {
+-					break // no more items
++				collected = append(collected, batch...)
++				if len(batch) < batchSize {
++					break
+ 				}
++			}
+ 
+-				rows = rows[:0] // keep allocated memory
++			if len(collected) > 0 {
++				allBatches = append(allBatches, cascadeBatch{collected, field})
+ 			}
+ 		}
+ 	}
+ 
++	// Phase 2: process all writes after ALL queries are complete.
++	for _, batch := range allBatches {
++		if err := deleteRefRecords(app, mainRecord, batch.refRecords, batch.field); err != nil {
++			return err
++		}
++	}
++
+ 	return nil
+ }
+ 
