@@ -103,7 +103,7 @@ Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. 
 2. `POCKETFLARE_MAIL_WEBHOOK_URL`: legacy generic webhook mode.
 3. PocketBase admin SMTP settings, delivered through the Workers sockets SMTP transport.
 
-HTTP providers and webhook delivery are the production paths. SMTP over Workers sockets requires provider-level proof, especially STARTTLS on port 587. Workers block outbound port 25.
+SMTP over Workers sockets has live Amazon SES STARTTLS proof on port 587. Other providers can still vary by port, TLS mode, and auth behavior. Workers block outbound port 25.
 
 The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md`.
 
@@ -179,12 +179,12 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 ## Known Limits
 
 - **D1 transactions:** Pocketflare maps fixed write transactions to `D1Database.batch()`, which executes statements sequentially as a SQL transaction and rolls back the entire sequence on failure. Reads after queued writes fail deterministically before any partial persistence. Reads before writes are direct (non-isolated). See `docs/D1-COMPATIBILITY.md` for the full feature matrix.
-- A future SQLite-backed Durable Object storage mode (`DurableObjectSqliteStorage`) would provide real interactive SQLite transactions for closer upstream PocketBase compatibility. Tradeoff: the app database moves from D1 to a Durable Object with different latency, cost, and scaling characteristics. Not part of the current D1 batch implementation.
-- Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are not implemented.
+- A future SQLite-backed Durable Object storage mode (`DurableObjectSqliteStorage`) would provide real interactive SQLite transactions for closer upstream PocketBase compatibility. Tradeoff: the app database moves from D1 to a Durable Object with different latency, cost, storage limit, and scaling characteristics. Not part of the current D1 batch implementation.
+- Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are possible app-level optimizations, not required for PocketBase API compatibility.
 - R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured. The Worker relay fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
-- HTTP mail providers and webhook email are the production paths. SMTP sockets require provider-level proof, especially STARTTLS on port 587.
+- SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
 - PocketBase backups are not complete Pocketflare backups. Use D1 Time Travel/export plus a separate R2 file backup plan.
 
 ## References

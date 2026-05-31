@@ -170,7 +170,7 @@ pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_URL
 pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_TOKEN
 ```
 
-Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then [PocketBase] admin SMTP settings. Use HTTP providers or the webhook for production until SMTP sockets are proven against your provider.
+Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then [PocketBase] admin SMTP settings. SMTP over Workers sockets has been proven with Amazon SES STARTTLS on port 587. Provider behavior can still vary; HTTP providers and webhook delivery remain available for API-based mail.
 
 Amazon SES SMTP credentials use a derived SMTP password, not the raw 40-character AWS secret access key. After creating SES SMTP credentials for the same region as your SMTP endpoint, convert the secret locally:
 
@@ -269,14 +269,14 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 
 ## Current Limits
 
-- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. Some upstream PocketBase features (raw SQL route, OAuth2 flow, collection import) interleave reads and writes and may need targeted patches before they are fully compatible with D1 batch semantics.
+- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. A future optional SQLite-backed Durable Object mode is the full-compatibility path for apps that need upstream SQLite transaction semantics.
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
-- Uploads and downloads still pass through the Worker; direct browser-to-R2 upload and signed R2 download redirects are not implemented.
+- Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
-- [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection. A Durable Object-backed limiter would be needed for globally exact [PocketBase] rate-limit semantics.
+- [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker.
-- HTTP mail providers and webhook delivery are the production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
+- SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
 - [PocketBase] backups are not complete Pocketflare backups. Use D1 Time Travel/export plus a separate R2 file backup plan.
 
 ## Cloudflare Limits

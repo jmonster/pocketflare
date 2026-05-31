@@ -140,7 +140,7 @@ Constraints:
 - **Pending results are opaque.** `RowsAffected` and `LastInsertId` error until after commit; code that inspects these inside the transaction callback is incompatible with deferred batch commit.
 - Some upstream PocketBase paths interleave reads and writes inside `RunInTransaction` and need targeted patches (see `docs/D1-COMPATIBILITY.md` for the full matrix).
 - When a query-after-write is blocked, the driver emits a structured log line to stderr: `{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":N,"query":"..."}`. Use `wrangler tail` to identify which paths need patching.
-- For full upstream PocketBase compatibility without application rewrites, a SQLite-backed Durable Object storage mode is the long-term path. D1 remains the default for cost and availability.
+- For full upstream PocketBase compatibility without application rewrites, add an optional SQLite-backed Durable Object storage mode. D1 remains the default for cost and availability.
 
 ## D1 Data Import (migrating from SQLite PocketBase)
 
@@ -187,6 +187,6 @@ PocketBase's built-in SMTP client uses Go `net/smtp`, which is non-functional in
 2. **Generic webhook** (`POCKETFLARE_MAIL_WEBHOOK_URL`): legacy path — posts JSON payloads to any HTTPS endpoint.
 3. **SMTP via Workers sockets**: when neither of the above is set, reads PocketBase admin SMTP settings at send time and delivers through `cloudflare:sockets` (JS module `smtp-transport.mjs`).
 
-Provider selection priority is: `MAIL_PROVIDER` > `MAIL_WEBHOOK_URL` > PocketBase SMTP settings. HTTP providers and webhook are the production paths. SMTP sockets compile but need live-provider proof, especially STARTTLS on port 587. Port 25 is blocked.
+Provider selection priority is: `MAIL_PROVIDER` > `MAIL_WEBHOOK_URL` > PocketBase SMTP settings. SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior. Port 25 is blocked.
 
 Env vars: `POCKETFLARE_MAIL_PROVIDER`, `POCKETFLARE_MAIL_API_KEY`, `POCKETFLARE_MAIL_DOMAIN` (Mailgun only), plus legacy `POCKETFLARE_MAIL_WEBHOOK_URL` / `POCKETFLARE_MAIL_WEBHOOK_TOKEN`.

@@ -16,7 +16,7 @@ Provider selection priority:
 2. `POCKETFLARE_MAIL_WEBHOOK_URL`
 3. PocketBase admin SMTP settings
 
-Use HTTP providers or the webhook for production until SMTP sockets are proven against the target provider.
+SMTP over Workers sockets has been proven with Amazon SES STARTTLS on port 587. Provider behavior can still vary; HTTP providers and webhook delivery remain available for API-based mail.
 
 ## HTTP Providers
 
@@ -96,11 +96,15 @@ Expected constraints:
 - Port 25 is blocked by Cloudflare Workers and should fail with a clear configuration error.
 - SMTP settings are read from PocketBase admin settings at send time when no HTTP provider or webhook is configured.
 
-SMTP requires live-provider proof before production use, especially STARTTLS on port 587.
+SMTP has live Amazon SES STARTTLS proof. Treat each additional provider as a compatibility proof because TLS mode, auth behavior, and ports can vary.
 
-## Validation Needed
+## Validation Notes
 
-Minimum proof before promoting SMTP:
+Current SMTP proof:
+
+1. Amazon SES STARTTLS on port 587 sends a real PocketBase test email.
+
+Minimum proof before promoting another SMTP provider:
 
 1. Send a real password-reset email through PocketBase on port 465.
 2. Send a real password-reset email through PocketBase on port 587.
