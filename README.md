@@ -79,6 +79,38 @@ make deploy
 
 `make deploy` builds first, then runs `pnpm exec wrangler deploy`.
 
+## Run Locally
+
+Use Wrangler's local dev server for normal iteration. Wrangler runs the Worker in its local Miniflare-backed runtime and stores local D1/R2 state under `.wrangler/`.
+
+From a fresh checkout:
+
+```sh
+./scripts/update-pb.sh
+pnpm install
+make build
+make dev
+```
+
+Then open:
+
+```text
+http://localhost:8787/_/
+```
+
+Use the first-access installer to create a local superuser. Local D1/R2 data is separate from Cloudflare remote resources.
+
+After changing Go, `worker.mjs`, `runtime.mjs`, `realtime-do.mjs`, or `smtp-transport.mjs`, stop Wrangler, run `make build`, then run `make dev` again. Admin UI changes require rebuilding `admin-ui/_` before `make build`.
+
+To test against real Cloudflare D1/R2 bindings instead of local Miniflare state:
+
+```sh
+make build
+pnpm exec wrangler dev --remote
+```
+
+Local dev is useful for app behavior and UI checks, but it is not proof of deployed Worker memory behavior. Use a deployed Worker for cold-start, concurrent-browser-request, and edge-runtime validation.
+
 ## Admin Setup
 
 For a fresh database, deploy and open `/_/`. PocketBase's first-access installer creates the first superuser.
