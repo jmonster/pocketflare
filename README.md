@@ -27,6 +27,40 @@ warm dynamic p95: 74.78ms client
 
 `route=bypassed` means Cloudflare served the admin asset without invoking the Worker script or Go WASM runtime.
 
+## Cost Model
+
+Prices below are estimates from Cloudflare public pricing checked 2026-05-30. Check Cloudflare pricing before making commitments.
+
+Pocketflare currently needs Workers Paid because the deployed bundle is about 8.9 MiB gzip, above the Workers Free 3 MiB gzip limit. The baseline platform cost is therefore the Workers Paid minimum: **$5/month**.
+
+Included in that baseline:
+
+- Workers: 10 million dynamic Worker requests/month and 30 million CPU ms/month.
+- D1: 25 billion rows read/month, 50 million rows written/month, and 5 GB storage.
+- R2 free tier: 10 GB-month storage, 1 million Class A operations, 10 million Class B operations, and no egress fees.
+- Static assets: admin UI files served by Workers Assets are free/unlimited and do not invoke the Worker script.
+
+Typical Pocketflare accounting:
+
+| Action | Worker requests | D1 usage | R2 usage | Pocketflare overhead |
+|---|---:|---|---|---|
+| Admin static file | 0 | 0 | 0 | Served by Workers Assets. |
+| Dynamic API request | 1 | Rows scanned/written by PocketBase query | 0 unless file route | Singleton WASM runtime per isolate. |
+| First dynamic request in an isolate | 1 | Settings/migrations/route bootstrap reads | 0 | Adds WASM + Go boot once for that isolate. |
+| Record create/update | 1 | PocketBase row writes plus index writes | Optional if file fields | No extra storage service. |
+| File upload | 1 | Record write if attached to record | R2 Class A: usually 1 small put, or multipart parts for large files | Upload bytes pass through Worker. |
+| File download | 1 | Access-rule/auth reads | R2 Class B: usually 1 get | Download bytes pass through Worker. |
+| Cron tick | 1 per scheduled event | Due-job checks and job work | Job-dependent | Default config runs once per minute, about 43,200 Worker requests/month. |
+
+Realtime/SSE is optional. Without the Durable Object binding, realtime is disabled and costs nothing. With it enabled, Pocketflare uses one named Durable Object hub for SSE transport:
+
+- DO requests: 1 million/month included, then $0.15/million.
+- DO duration: 400,000 GB-s/month included, then $12.50/million GB-s.
+- One continuously active 128 MB Durable Object is about 324,000 GB-s/month. That fits inside the included Paid allowance if it is your main Durable Object use; priced as overage it would be about $4.05/month.
+- Actual realtime cost depends on connected time and event fan-out. Each connection/subscription/message delivery can add DO requests; long-lived SSE connections can keep the DO active.
+
+For a small baseline PocketBase app with no realtime and less than 10 GB of files, the expected Cloudflare bill is usually the **$5/month Workers Paid minimum** until product-level database scans, writes, file traffic, or realtime usage exceed included limits.
+
 ## New Project
 
 ```sh
@@ -61,9 +95,9 @@ Existing or migrated PocketBase settings are preserved.
 
 Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. Mail delivery can use:
 
+- SMTP through Workers sockets
 - HTTP provider APIs: `resend`, `postmark`, `sendgrid`, or `mailgun`
 - a generic HTTPS webhook
-- SMTP through Workers sockets, currently experimental and still needs live-provider proof
 
 HTTP provider setup:
 
@@ -165,7 +199,7 @@ make deploy
 
 The data export includes `_params/settings`, so migrated app URL and trusted proxy settings are not replaced by Pocketflare defaults.
 
-## Cloudflare Limits That Matter
+## Cloudflare Limits
 
 Current Worker limits that shape Pocketflare:
 
@@ -188,4 +222,8 @@ Current Worker limits that shape Pocketflare:
 ## References
 
 - Cloudflare Workers limits: https://developers.cloudflare.com/workers/platform/limits/
+- Cloudflare Workers pricing: https://developers.cloudflare.com/workers/platform/pricing/
+- Cloudflare Durable Objects pricing: https://developers.cloudflare.com/durable-objects/platform/pricing/
+- Cloudflare D1 pricing: https://developers.cloudflare.com/workers/platform/pricing/#d1
+- Cloudflare R2 pricing: https://developers.cloudflare.com/r2/pricing/
 - Cloudflare R2 upload methods: https://developers.cloudflare.com/r2/objects/upload-objects/
