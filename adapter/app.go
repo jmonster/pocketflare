@@ -11,8 +11,10 @@ import (
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/filesystem"
+	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/pocketbase/pocketbase/tools/router"
 
+	"github.com/pocketflare/pocketflare/adapter/internal/workerhttp"
 	"github.com/pocketflare/pocketflare/adapter/mail"
 	"github.com/pocketflare/pocketflare/adapter/r2blob"
 	"github.com/pocketflare/pocketflare/adapter/wasmdb"
@@ -75,6 +77,16 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	if err != nil {
 		return nil, nil, err
 	}
+	pbRouter.Bind(&hook.Handler[*core.RequestEvent]{
+		Id:       "pocketflareNormalizeRemoteAddr",
+		Priority: apis.DefaultWWWRedirectMiddlewarePriority - 1,
+		Func: func(e *core.RequestEvent) error {
+			// syumai/workers sets RemoteAddr to bare CF-Connecting-IP; PocketBase
+			// expects Go's host:port form when deriving log remoteIP.
+			workerhttp.NormalizeRemoteAddr(e.Request)
+			return e.Next()
+		},
+	})
 
 	// Wire the Durable Object realtime bridge so SSE works across isolates.
 	initRealtimeDO(pb)
