@@ -49,7 +49,7 @@ Normal new-project admin setup should use Pocketflare's `/_pf` route, which redi
 
 ## Cloudflare Bindings
 
-`STORAGE` and `BACKUPS` are live R2 bindings.The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
+`STORAGE` and `BACKUPS` are live R2 bindings. The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
 
 PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but it should not be treated as restorable production data. Use D1 Time Travel/export for database backup and copy/snapshot the `STORAGE` R2 bucket separately for uploaded files. Backup restore is unsupported on Workers.
 
@@ -85,6 +85,34 @@ Managed by `scripts/update-pb.sh` against PocketBase v0.39.0:
 | `008-pocketflare-admin-ui.patch` | Apply Pocketflare admin UI branding and replace upstream S3 settings with R2/D1 guidance. |
 
 Keep durable source edits in this checkout. Do not edit generated `internal/pocketbase/` as the lasting fix; edit patches and rerun `scripts/update-pb.sh`.
+
+## Updating PocketBase
+
+Before bumping PocketBase, run `node scripts/check-pb-version.mjs` and update the default version in `scripts/update-pb.sh`.
+
+Use a fresh upstream clone under `.artifacts/` to replay every patch against the new tag before touching the durable generated tree. A good proof lane is:
+
+```sh
+rm -rf .artifacts/pb-apply
+git clone --depth 1 --branch vX.Y.Z https://github.com/pocketbase/pocketbase.git .artifacts/pb-apply
+cd .artifacts/pb-apply
+for patch in ../../patches/*.patch; do git apply "$patch"; done
+```
+
+Only after the patch stack applies cleanly should `internal/pocketbase/` be replaced or regenerated. Preserve the previous generated tree under `.artifacts/` if it helps compare behavior; do not edit it as durable source.
+
+Patch notes from the v0.39.0 bump:
+- Upstream added `core/notify_watcher.go`; the WASM patch must build-tag that file out and provide `notify_watcher_wasm.go`, not duplicate `registerNotifyWatcherHooks` in `base_wasm.go`.
+- The admin UI is JS modules in `ui/src`, not the older Svelte layout. Patch `ui/src/...`, run `pnpm install` and `pnpm run build` from `internal/pocketbase/ui`, then sync `ui/dist/` into `admin-ui/_`.
+- If `008-pocketflare-admin-ui.patch` adds binary assets such as `ui/public/images/logo.png`, regenerate it with `git diff --binary` and verify the patch applies from a fresh clone. Do not run blanket whitespace cleanup over binary patch hunks; it can corrupt the `GIT binary patch` terminator.
+- Regenerate admin UI patches from `internal/pocketbase` with `git -C internal/pocketbase diff --binary -- <paths>`. Untracked new files need an explicit binary add hunk.
+- Treat `git diff --check` failures inside `.patch` fixtures carefully. It is acceptable to run `git diff --check -- ':!patches/*.patch'` if the patch fixture itself must preserve upstream or binary-patch formatting.
+
+After replaying patches and rebuilding generated assets, run the narrow proofs:
+- `make build`
+- `node scripts/check-pb-version.mjs`
+- fresh patch replay from `.artifacts/`
+- `pnpm exec wrangler deploy --dry-run --outdir .artifacts/deploy-dry-run`
 
 ## D1 Transaction Constraint
 
