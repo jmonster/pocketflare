@@ -224,8 +224,96 @@ STATUS=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/$TEST_COLL_ID/rec
     -d '{"title":""}' | json .status)
 assert "empty required field rejected" '[ "$STATUS" = "400" ]'
 
-# ── 8. Sequential retry (verifies instance stability, not cold start) ──
-echo "── 8. Sequential retry ──"
+# ── 8. Batch transaction atomicity ──
+echo "── 8. Batch transaction atomicity ──"
+
+# Ensure batch is enabled
+curl -sS --max-time 30 -X PATCH "$BASE/api/settings" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"batch":{"enabled":true,"maxRequests":10,"timeout":30,"maxBodySize":5242880}}' >/dev/null
+
+# Create a temp collection for batch tests
+BATCH_COLL=$(curl -sS --max-time 30 -X POST "$BASE/api/collections" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"e2e_batch_test","type":"base","fields":[{"name":"title","type":"text","required":true}]}')
+BATCH_COLL_ID=$(echo "$BATCH_COLL" | json .id)
+assert "create batch test collection" '[ -n "$BATCH_COLL_ID" ]'
+
+# Test 1: failed batch with mixed valid/invalid requests must leave zero records
+BATCH_FAIL_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/batch" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg cid "$BATCH_COLL_ID" '{requests:[
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"batch-ok-1"}},
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"batch-ok-2"}},
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:""}}
+    ]}')")
+BATCH_FAIL_STATUS=$(echo "$BATCH_FAIL_RESP" | json .status)
+BATCH_FAIL_DATA=$(echo "$BATCH_FAIL_RESP" | json '.data.requests')
+assert "failed batch returns 400 status" '[ "$BATCH_FAIL_STATUS" = "400" ]'
+assert "failed batch includes batch_request_failed" 'echo "$BATCH_FAIL_DATA" | grep -q batch_request_failed'
+
+BATCH_FAIL_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+    -H "Authorization: Bearer $TOKEN" | json .totalItems)
+assert "failed batch leaves zero records" '[ "$BATCH_FAIL_COUNT" = "0" ]'
+
+# Test 2: successful batch must persist all records
+BATCH_OK_HTTP=$(curl -sS --max-time 30 -o /tmp/pocketflare-batch-ok.json -w "%{http_code}" -X POST "$BASE/api/batch" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg cid "$BATCH_COLL_ID" '{requests:[
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"batch-ok-1"}},
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"batch-ok-2"}},
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"batch-ok-3"}}
+    ]}')")
+assert "successful batch returns 200" '[ "$BATCH_OK_HTTP" = "200" ]'
+
+BATCH_OK_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+    -H "Authorization: Bearer $TOKEN" | json .totalItems)
+assert "successful batch persists all 3 records" '[ "$BATCH_OK_COUNT" = "3" ]'
+
+# Cleanup batch records (delete all)
+for rid in $(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+    -H "Authorization: Bearer $TOKEN" | json '.items[].id'); do
+    curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$BATCH_COLL_ID/records/$rid" \
+        -H "Authorization: Bearer $TOKEN" >/dev/null
+done
+
+# Test 3: query-after-write in batch must fail safely
+# Create a record first (outside batch) so PATCH has an ID to query for.
+PRE_RECORD_ID=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/$BATCH_COLL_ID/records" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"title":"pre-existing"}' | json .id)
+assert "pre-existing record created" '[ -n "$PRE_RECORD_ID" ]'
+
+# Batch: write first, then query. The PATCH handler calls FindRecordById
+# which is a read after a queued write — must fail deterministically.
+QAW_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/batch" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n --arg cid "$BATCH_COLL_ID" --arg rid "$PRE_RECORD_ID" '{requests:[
+        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"queued-write"}},
+        {method:"PATCH",url:("/api/collections/"+$cid+"/records/"+$rid),body:{title:"should-fail"}}
+    ]}')")
+QAW_STATUS=$(echo "$QAW_RESP" | json .status)
+QAW_DATA=$(echo "$QAW_RESP" | json '.data.requests')
+assert "query-after-write batch returns 400" '[ "$QAW_STATUS" = "400" ]'
+assert "query-after-write includes batch_request_failed" 'echo "$QAW_DATA" | grep -q batch_request_failed'
+
+QAW_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+    -H "Authorization: Bearer $TOKEN" | json .totalItems)
+# Only the pre-existing record remains; the batch was fully rolled back.
+assert "query-after-write leaves only pre-existing record (1)" '[ "$QAW_COUNT" = "1" ]'
+
+# Clean up the pre-existing record
+curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$BATCH_COLL_ID/records/$PRE_RECORD_ID" \
+    -H "Authorization: Bearer $TOKEN" >/dev/null
+
+# ── 9. Sequential retry (verifies instance stability, not cold start) ──
+echo "── 9. Sequential retry ──"
 PASSES=0
 for i in $(seq 1 3); do
     CODE=$(curl -sS --max-time 90 "$BASE/api/health" | json .code)
@@ -235,7 +323,7 @@ assert "3 sequential health checks pass" '[ "$PASSES" = "3" ]'
 
 # ── Cleanup ──
 echo "── Cleanup ──"
-for id in "$TEST_COLL_ID" "$AUTH_COLL_ID" "$FILE_COLL_ID"; do
+for id in "$TEST_COLL_ID" "$AUTH_COLL_ID" "$FILE_COLL_ID" "$BATCH_COLL_ID"; do
     [ -n "$id" ] && curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$id" \
         -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
 done
