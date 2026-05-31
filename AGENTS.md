@@ -49,7 +49,7 @@ Normal new-project admin setup should use Pocketflare's `/_pf` route, which redi
 
 ## Cloudflare Bindings
 
-`STORAGE` and `BACKUPS` are live R2 bindings. They are not dead and do not require enabling PocketBase S3 settings for normal file storage. The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
+`STORAGE` and `BACKUPS` are live R2 bindings.The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
 
 PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but it should not be treated as restorable production data. Use D1 Time Travel/export for database backup and copy/snapshot the `STORAGE` R2 bucket separately for uploaded files. Backup restore is unsupported on Workers.
 

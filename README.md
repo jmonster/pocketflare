@@ -191,15 +191,13 @@ directory = "./admin-ui"
 binding = "ASSETS"
 ```
 
-`STORAGE` and `BACKUPS` are used by Pocketflare's R2 filesystem adapter. Do not enable [PocketBase] S3 just to make file fields work.
+`STORAGE` and `BACKUPS` are used by Pocketflare's R2 filesystem adapter.
 
 `ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` so browser fan-out for admin static files does not boot the Go WASM runtime. Pocketflare's `/_pf` route is the one-time first-superuser setup entry point; `/_` and nested admin assets stay on Workers Assets.
 
 ## File Storage
 
-Do not enable [PocketBase] S3 for normal Pocketflare file fields. In the Workers build, Pocketflare injects an R2 filesystem adapter and ignores the upstream local/S3 filesystem path for file storage.
-
-The upstream admin "Files storage" page is misleading for Pocketflare today: file fields already use the `STORAGE` R2 binding, and the [PocketBase] S3 form is not the source of truth. Leave it disabled unless you are deliberately testing upstream S3 behavior outside normal Pocketflare file storage.
+In the Workers build, Pocketflare injects an R2 filesystem adapter and ignores the upstream local/S3 filesystem path for file storage.
 
 Standard [PocketBase] file uploads and downloads are still mediated by the [PocketBase] API. Direct browser-to-R2 uploads and signed R2 download redirects are possible future Pocketflare features, not effects of enabling [PocketBase] S3.
 

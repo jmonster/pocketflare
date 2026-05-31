@@ -109,7 +109,7 @@ The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`,
 
 ## File Storage Behavior
 
-Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selection for normal file fields. The adapter injects an R2-backed filesystem directly, so users should not enable PocketBase S3 just to make file storage work.
+Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selection for normal file fields. The adapter injects an R2-backed filesystem directly.
 
 The standard PocketBase file API still proxies uploads and downloads through PocketBase. Upstream S3 mode does not make normal file-field uploads direct-to-S3. Direct browser-to-R2 uploads, signed R2 download redirects, or a public R2 custom domain would require explicit Pocketflare routes that preserve PocketBase access rules.
 
