@@ -215,6 +215,7 @@ Current Worker limits that shape Pocketflare:
 - Uploads and downloads still pass through the Worker; direct browser-to-R2 upload and signed R2 download redirects are not implemented.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
+- PocketBase rate limiting uses PocketBase's upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. It is useful as best-effort app protection, but use Cloudflare WAF/rate limiting for edge-wide abuse protection. A Durable Object-backed limiter would be needed for globally exact PocketBase rate-limit semantics.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by PocketBase's in-process ticker.
 - HTTP mail providers and webhook delivery are the production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
 - Backup restore still needs a cleanup pass to remove the last dependency on PocketBase backup S3 settings.
