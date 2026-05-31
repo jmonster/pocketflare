@@ -4,13 +4,14 @@ set -euo pipefail
 # migrate-data.sh — Export PocketBase SQLite data.db to D1-compatible SQL
 #
 # Usage:
-#   ./scripts/migrate-data.sh <path-to-data.db> [--include-logs] [--data-only] [--schema-only]
+#   ./scripts/migrate-data.sh <path-to-data.db> [--include-logs] [--exclude-migrations] [--data-only] [--schema-only]
 #
 # Examples:
 #   ./scripts/migrate-data.sh ./pb_data/data.db > schema-and-data.sql
 #   ./scripts/migrate-data.sh ./pb_data/data.db --schema-only > schema.sql
 #   ./scripts/migrate-data.sh ./pb_data/data.db --data-only > data.sql
 #   ./scripts/migrate-data.sh ./pb_data/data.db --include-logs > with-logs.sql
+#   ./scripts/migrate-data.sh ./pb_data/data.db --exclude-migrations > rebuild-from-source.sql
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -31,14 +32,16 @@ DB_PATH="${1:-}"
 shift 2>/dev/null || true
 
 INCLUDE_LOGS=false
+EXCLUDE_MIGRATIONS=false
 DATA_ONLY=false
 SCHEMA_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --include-logs) INCLUDE_LOGS=true ;;
-        --data-only)    DATA_ONLY=true ;;
-        --schema-only)  SCHEMA_ONLY=true ;;
+        --include-logs)        INCLUDE_LOGS=true ;;
+        --exclude-migrations)  EXCLUDE_MIGRATIONS=true ;;
+        --data-only)           DATA_ONLY=true ;;
+        --schema-only)         SCHEMA_ONLY=true ;;
         *) echo "Unknown option: $1"; usage ;;
     esac
     shift
@@ -72,19 +75,32 @@ if ! command -v sqlite3 &>/dev/null; then
 fi
 
 # ── Tables to exclude ─────────────────────────────────────────────────────────
-EXCLUDE_TABLES=("_migrations")
+EXCLUDE_TABLES=()
+
+if [[ "$EXCLUDE_MIGRATIONS" == true ]]; then
+    EXCLUDE_TABLES+=("_migrations")
+fi
 
 if [[ "$INCLUDE_LOGS" != true ]]; then
     EXCLUDE_TABLES+=("_logs")
 fi
 
-# Build SQL exclusion clause: one string per table name for use with .separator
-EXCLUDE_CSV=""
-sep=""
-for t in "${EXCLUDE_TABLES[@]}"; do
-    EXCLUDE_CSV="${EXCLUDE_CSV}${sep}'${t}'"
-    sep=","
-done
+is_excluded_table() {
+    local table="$1"
+    local excluded_table
+
+    if ((${#EXCLUDE_TABLES[@]} == 0)); then
+        return 1
+    fi
+
+    for excluded_table in "${EXCLUDE_TABLES[@]}"; do
+        if [[ "$table" == "$excluded_table" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
 
 # ── Schema dump ───────────────────────────────────────────────────────────────
 if [[ "$DATA_ONLY" != true ]]; then
@@ -97,15 +113,9 @@ if [[ "$DATA_ONLY" != true ]]; then
     TABLES=$(sqlite3 "$DB_PATH" ".tables")
 
     for table in $TABLES; do
-        # Check if excluded
-        excluded=false
-        for et in "${EXCLUDE_TABLES[@]}"; do
-            if [[ "$table" == "$et" ]]; then
-                excluded=true
-                break
-            fi
-        done
-        [[ "$excluded" == true ]] && continue
+        if is_excluded_table "$table"; then
+            continue
+        fi
 
         # Dump the CREATE TABLE statement
         SCHEMA=$(sqlite3 "$DB_PATH" ".schema \"$table\"" 2>/dev/null || true)
@@ -124,15 +134,9 @@ if [[ "$SCHEMA_ONLY" != true ]]; then
     TABLES=$(sqlite3 "$DB_PATH" ".tables")
 
     for table in $TABLES; do
-        # Check if excluded
-        excluded=false
-        for et in "${EXCLUDE_TABLES[@]}"; do
-            if [[ "$table" == "$et" ]]; then
-                excluded=true
-                break
-            fi
-        done
-        [[ "$excluded" == true ]] && continue
+        if is_excluded_table "$table"; then
+            continue
+        fi
 
         # Check if table is empty
         ROWCOUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM \"$table\";" 2>/dev/null || echo "0")
