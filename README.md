@@ -113,6 +113,12 @@ pnpm exec wrangler dev --remote
 
 Local dev is useful for app behavior and UI checks, but it is not proof of deployed Worker memory behavior. Use a deployed Worker for cold-start, concurrent-browser-request, and edge-runtime validation.
 
+To check whether the pinned PocketBase version is current:
+
+```sh
+pnpm run check:pb-version
+```
+
 ## Admin Setup
 
 For a fresh database, deploy and open `/_pf`. Pocketflare redirects to [PocketBase]'s tokenized first-access installer, where you create the first superuser. After setup, use `/_/` for the normal [PocketBase] admin UI.

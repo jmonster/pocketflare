@@ -16,7 +16,7 @@ index 25ce758..f798078 100644
 +++ b/tools/router/rereadable_read_closer.go
 @@ -69,8 +69,10 @@ func (r *RereadableReadCloser) Reread() {
  	}
- 
+
  	// eagerly close the old reader to prevent accumulating too much memory or temp files
 -	if err := r.ReadCloser.Close(); err != nil {
 -		r.closeErrors = append(r.closeErrors, err)
@@ -25,12 +25,12 @@ index 25ce758..f798078 100644
 +			r.closeErrors = append(r.closeErrors, err)
 +		}
  	}
- 
+
  	r.ReadCloser = r.copy
 @@ -88,8 +90,10 @@ func (r *RereadableReadCloser) Close() error {
  		}
  	}
- 
+
 -	if err := r.ReadCloser.Close(); err != nil {
 -		r.closeErrors = append(r.closeErrors, err)
 +	if r.ReadCloser != nil {
@@ -38,8 +38,8 @@ index 25ce758..f798078 100644
 +			r.closeErrors = append(r.closeErrors, err)
 +		}
  	}
- 
+
  	return errors.Join(r.closeErrors...)
--- 
+--
 2.50.1 (Apple Git-155)
 

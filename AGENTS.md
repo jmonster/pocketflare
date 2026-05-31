@@ -4,6 +4,7 @@
 
 ```sh
 ./scripts/update-pb.sh       # materialize internal/pocketbase and apply patches
+node scripts/check-pb-version.mjs
 make build                   # compile Go WASM and copy JS runtime files into dist/
 make deploy                  # build, then pnpm exec wrangler deploy
 make dev                     # pnpm exec wrangler dev
@@ -70,7 +71,7 @@ Cloudflare's default static-asset routing can serve matching files without Worke
 
 ## PocketBase Patch Set
 
-Managed by `scripts/update-pb.sh` against PocketBase v0.36.9:
+Managed by `scripts/update-pb.sh` against PocketBase v0.39.0:
 
 | Patch | Purpose |
 |---|---|
@@ -78,6 +79,10 @@ Managed by `scripts/update-pb.sh` against PocketBase v0.36.9:
 | `002-filesystem-wasm.patch` | Add injectable WASM filesystem constructors used by the adapter for R2. |
 | `003-nil-body-fix.patch` | Guard nil request bodies from Workers GET requests. |
 | `004-filesystem-newblob.patch` | Add `filesystem.NewBlob(blob.Driver)` for R2-backed storage. |
+| `005-cron-rundue.patch` | Expose cron due-run behavior needed by the Worker scheduled handler. |
+| `006-realtime-wasm.patch` | Allow the Worker WebSocket/Durable Object bridge to provide realtime clients. |
+| `007-defaultclient-setid.patch` | Let the realtime bridge preserve PocketBase subscription client ids. |
+| `008-pocketflare-admin-ui.patch` | Apply Pocketflare admin UI branding and replace upstream S3 settings with R2/D1 guidance. |
 
 Keep durable source edits in this checkout. Do not edit generated `internal/pocketbase/` as the lasting fix; edit patches and rerun `scripts/update-pb.sh`.
 

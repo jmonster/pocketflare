@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "make build",
+    "check:pb-version": "node scripts/check-pb-version.mjs",
     "deploy": "make deploy",
     "dev": "wrangler dev"
   }

@@ -1,3 +1,346 @@
+diff --git a/ui/src/base/credits.js b/ui/src/base/credits.js
+index 01fea3f..e6d7e3a 100644
+--- a/ui/src/base/credits.js
++++ b/ui/src/base/credits.js
+@@ -29,6 +29,11 @@ window.app.components.credits = function() {
+                         }
+                     },
+                     t.span({ className: "txt" }, () => link.label),
++                    () => {
++                        if (link.labelSuffix) {
++                            return t.span({ className: link.labelSuffixClass || "", textContent: link.labelSuffix });
++                        }
++                    },
+                 );
+             });
+         },
+diff --git a/ui/src/css/base.css b/ui/src/css/base.css
+index 1a34df8..c58c5be 100644
+--- a/ui/src/css/base.css
++++ b/ui/src/css/base.css
+@@ -960,6 +960,16 @@ hr {
+         border-color: var(--dangerColor);
+         background: var(--surfaceDangerColor);
+     }
++    &.pocketflare {
++        border-color: #f38020;
++        background: #fff1e6;
++        box-shadow: inset 4px 0 0 #f38020;
++        code,
++        .label,
++        hr {
++            background: rgba(243, 128, 32, 0.14);
++        }
++    }
+ }
+ 
+ .label {
+@@ -1268,6 +1278,11 @@ a.thumb {
+     max-height: 40px;
+ }
+ 
++.pocketflare-version-suffix {
++    color: #f38020;
++    font-weight: bold;
++}
++
+ .dragline {
+     position: relative;
+     z-index: 9;
+diff --git a/ui/src/settings/backups/pageBackupsSettings.js b/ui/src/settings/backups/pageBackupsSettings.js
+index ce52f54..a2ae057 100644
+--- a/ui/src/settings/backups/pageBackupsSettings.js
++++ b/ui/src/settings/backups/pageBackupsSettings.js
+@@ -1,19 +1,8 @@
+ import { settingsSidebar } from "../settingsSidebar";
+-import { backupsForm } from "./backupsForm";
+-import { backupsList } from "./backupsList";
+-import { backupUploadButton } from "./backupUploadButton";
+ 
+ export function pageBackupsSettings(route) {
+     app.store.title = "Backups";
+ 
+-    const data = store({
+-        resetList: null,
+-    });
+-
+-    function resetBackupsList() {
+-        data.resetList = Date.now();
+-    }
+-
+     return t.div(
+         { pbEvent: "pageBackupsSettings", className: "page page-backups-settings" },
+         settingsSidebar(),
+@@ -30,29 +19,31 @@ export function pageBackupsSettings(route) {
+             t.div(
+                 { className: "wrapper m-b-base" },
+                 t.div(
+-                    {
+-                        className: "grid",
+-                    },
++                    { className: "block" },
+                     t.div(
+-                        { className: "col-lg-12" },
+-                        t.div(
+-                            { className: "flex gap-10 m-b-sm" },
+-                            t.div({ className: "txt-lg" }, "Backup and restore your PocketBase data"),
+-                            app.components.refreshButton({
+-                                className: "btn sm transparent secondary circle tooltip-bottom",
+-                                onclick: resetBackupsList,
+-                            }),
+-                            backupUploadButton(resetBackupsList),
++                        { className: "txt-lg m-b-base" },
++                        t.p(
++                            null,
++                            "Use D1 Time Travel or D1 export for database backups. Back up R2 storage separately.",
+                         ),
+-                        backupsList({
+-                            reset: () => data.resetList,
+-                        }),
+                     ),
+                     t.div(
+-                        { className: "col-lg-12" },
+-                        backupsForm({
+-                            onsave: () => resetBackupsList(),
+-                        }),
++                        { className: "alert pocketflare" },
++                        t.div(
++                            null,
++                            t.p(
++                                null,
++                                "PocketBase backup creation, restore, auto backups, and backup S3 settings are not available in Pocketflare.",
++                            ),
++                            t.p(
++                                null,
++                                "PocketBase backups archive local ",
++                                t.code(null, "pb_data"),
++                                ", but Pocketflare stores application data in D1 and uploaded files in R2. Use D1 Time Travel or D1 export for database backups, and back up the ",
++                                t.code(null, "STORAGE"),
++                                " R2 bucket separately.",
++                            ),
++                        ),
+                     ),
+                 ),
+             ),
+diff --git a/ui/src/settings/storage/pageStorageSettings.js b/ui/src/settings/storage/pageStorageSettings.js
+index 279607b..2d380a9 100644
+--- a/ui/src/settings/storage/pageStorageSettings.js
++++ b/ui/src/settings/storage/pageStorageSettings.js
+@@ -3,70 +3,6 @@ import { settingsSidebar } from "../settingsSidebar";
+ export function pageStorageSettings() {
+     app.store.title = "File storage";
+ 
+-    const data = store({
+-        isLoading: false,
+-        isSaving: false,
+-        formSettings: null,
+-        initSerialized: "null",
+-        originalFormSettings: null,
+-        get hasChanges() {
+-            return data.initSerialized != JSON.stringify(data.formSettings);
+-        },
+-    });
+-
+-    loadSettings();
+-
+-    async function loadSettings() {
+-        data.isLoading = true;
+-
+-        try {
+-            init(await app.pb.settings.getAll());
+-
+-            data.isLoading = false;
+-        } catch (err) {
+-            if (!err.isAbort) {
+-                app.checkApiError(err);
+-                // data.isLoading = false; don't reset in case of a server error
+-            }
+-        }
+-    }
+-
+-    async function save() {
+-        if (data.isSaving || !data.hasChanges) {
+-            return;
+-        }
+-
+-        data.isSaving = true;
+-
+-        try {
+-            const redacted = app.utils.filterRedactedProps(data.formSettings);
+-            const settings = await app.pb.settings.update(redacted);
+-            init(settings);
+-
+-            app.toasts.success("Successfully saved storage settings.");
+-        } catch (err) {
+-            app.checkApiError(err);
+-        }
+-
+-        data.isSaving = false;
+-    }
+-
+-    function init(settings = {}) {
+-        // refresh local app settings
+-        app.store.settings = JSON.parse(JSON.stringify(settings));
+-
+-        data.formSettings = {
+-            s3: settings?.s3 || {},
+-        };
+-
+-        data.initSerialized = JSON.stringify(data.formSettings);
+-        data.originalFormSettings = JSON.parse(data.initSerialized);
+-    }
+-
+-    function reset() {
+-        data.formSettings = JSON.parse(data.initSerialized);
+-    }
+-
+     return t.div(
+         {
+             pbEvent: "pageStorageSettings",
+@@ -85,101 +21,31 @@ export function pageStorageSettings() {
+             ),
+             t.div(
+                 { className: "wrapper m-b-base" },
+-                () => {
+-                    if (data.isLoading) {
+-                        return t.div({ className: "block txt-center" }, t.span({ className: "loader lg" }));
+-                    }
+-
+-                    return t.form(
+-                        {
+-                            pbEvent: "storageSettingsForm",
+-                            className: "grid storage-settings-form",
+-                            inert: () => data.isSaving,
+-                            onsubmit: (e) => {
+-                                e.preventDefault();
+-                                save();
+-                            },
+-                        },
++                t.div(
++                    { className: "block" },
++                    t.div(
++                        { className: "txt-lg m-b-base" },
++                        t.p(null, "Pocketflare stores uploaded files in Cloudflare R2."),
++                    ),
++                    t.div(
++                        { className: "alert pocketflare" },
+                         t.div(
+-                            { className: "col-lg-12 txt-lg" },
++                            null,
+                             t.p(
+                                 null,
+-                                "By default PocketBase uses and recommends the local file system to store uploaded files because it is more performant, easier to manage and backup.",
++                                "The upstream PocketBase S3 storage setting is not available in Pocketflare. File fields use the Worker ",
++                                t.code(null, "STORAGE"),
++                                " R2 binding directly, so no PocketBase S3 credentials are needed here.",
+                             ),
+                             t.p(
+                                 null,
+-                                "Alternatively, if you have limited disk space available, you could opt to an S3 compatible external storage.",
+-                            ),
+-                        ),
+-                        t.div(
+-                            { className: "col-lg-12" },
+-                            app.components.s3ConfigFields({
+-                                config: () => data.formSettings.s3,
+-                                before: () => {
+-                                    const originalEnabled = data.originalFormSettings.s3?.enabled;
+-
+-                                    if (originalEnabled == data.formSettings.s3?.enabled) {
+-                                        return;
+-                                    }
+-
+-                                    return t.div(
+-                                        { className: "alert info m-t-sm" },
+-                                        "If you have existing uploaded files, you'll have to migrate them manually from the ",
+-                                        t.strong(null, originalEnabled ? "S3 storage" : "local file system"),
+-                                        " to the ",
+-                                        t.strong(
+-                                            null,
+-                                            data.formSettings.s3?.enabled ? "S3 storage" : "local file system",
+-                                        ),
+-                                        ".",
+-                                        t.br(),
+-                                        "There are several command line tools that can help you, such as: ",
+-                                        t.a({
+-                                            href: "https://github.com/rclone/rclone",
+-                                            target: "_blank",
+-                                            rel: "noopener noreferrer",
+-                                            className: "txt-bold",
+-                                            textContent: "rclone",
+-                                        }),
+-                                        ", ",
+-                                        t.a({
+-                                            href: "https://github.com/peak/s5cmd",
+-                                            target: "_blank",
+-                                            rel: "noopener noreferrer",
+-                                            className: "txt-bold",
+-                                            textContent: "s5cmd",
+-                                        }),
+-                                        ", etc.",
+-                                    );
+-                                },
+-                            }),
+-                        ),
+-                        t.div({ className: "col-lg-12" }, t.hr()),
+-                        t.div(
+-                            { className: "col-lg-12" },
+-                            t.div(
+-                                { className: "flex" },
+-                                t.div({ className: "m-r-auto" }),
+-                                t.button(
+-                                    {
+-                                        hidden: () => !data.hasChanges,
+-                                        type: "button",
+-                                        className: "btn transparent secondary",
+-                                        onclick: reset,
+-                                    },
+-                                    t.span({ className: "txt" }, "Cancel"),
+-                                ),
+-                                t.button(
+-                                    {
+-                                        className: () => `btn expanded-lg ${data.isSaving ? "loading" : ""}`,
+-                                        disabled: () => !data.hasChanges || data.isSaving,
+-                                    },
+-                                    t.span({ className: "txt" }, "Save changes"),
+-                                ),
++                                "Existing PocketBase local or S3 files should be migrated into the configured R2 bucket under the standard ",
++                                t.code(null, "storage/"),
++                                " prefix.",
+                             ),
+                         ),
+-                    );
+-                },
++                    ),
++                ),
+             ),
+             t.footer({ className: "page-footer" }, app.components.credits()),
+         ),
+diff --git a/ui/src/store.js b/ui/src/store.js
+index bc801cf..5846e13 100644
+--- a/ui/src/store.js
++++ b/ui/src/store.js
+@@ -20,8 +20,8 @@ window.app.store = store({
+         }
+     }),
+ 
+-    mainLogo: import.meta.env.BASE_URL + "images/logo.svg",
+-    headerLogo: import.meta.env.BASE_URL + "images/logo_white.svg",
++    mainLogo: import.meta.env.BASE_URL + "images/logo.png",
++    headerLogo: import.meta.env.BASE_URL + "images/logo.png",
+     favicon: "", // leave empty to fallback to the default one
+ 
+     title: "",
+@@ -52,6 +52,8 @@ window.app.store = store({
+             href: import.meta.env.PB_RELEASES,
+             icon: "ri-github-line",
+             label: `PocketBase ${import.meta.env.PB_VERSION}`,
++            labelSuffix: "f",
++            labelSuffixClass: "pocketflare-version-suffix",
+         },
+     ],
+ 
+
 diff --git a/ui/public/images/logo.png b/ui/public/images/logo.png
 new file mode 100644
 index 0000000000000000000000000000000000000000..1043a72958624c27aeddf683bf0c72ac02521a50
@@ -4281,1296 +4624,3 @@ aF8?2AWP#Ct!Xw-O0000<MNUMnLSTZLs-lqq
 literal 0
 HcmV?d00001
 
-diff --git a/ui/src/App.svelte b/ui/src/App.svelte
-index 1ac5b44..0b3ef89 100644
---- a/ui/src/App.svelte
-+++ b/ui/src/App.svelte
-@@ -69,7 +69,7 @@
- </script>
- 
- <svelte:head>
--    <title>{CommonHelper.joinNonEmpty([$pageTitle, $appName, "PocketBase"], " - ", false)}</title>
-+    <title>{CommonHelper.joinNonEmpty([$pageTitle, $appName, "Pocketflare"], " - ", false)}</title>
- 
-     {#if window.location.protocol == "https:"}
-         <link
-@@ -85,8 +85,8 @@
-         <aside class="app-sidebar">
-             <a href="/" class="logo logo-sm" use:link>
-                 <img
--                    src="{import.meta.env.BASE_URL}images/logo.svg"
--                    alt="PocketBase logo"
-+                    src="{import.meta.env.BASE_URL}images/logo.png"
-+                    alt="Pocketflare logo"
-                     width="40"
-                     height="40"
-                 />
-diff --git a/ui/src/components/base/FullPage.svelte b/ui/src/components/base/FullPage.svelte
-index d503db2..7b4e7c0 100644
---- a/ui/src/components/base/FullPage.svelte
-+++ b/ui/src/components/base/FullPage.svelte
-@@ -10,12 +10,12 @@
-             <div class="block txt-center m-b-lg">
-                 <figure class="logo">
-                     <img
--                        src="{import.meta.env.BASE_URL}images/logo.svg"
--                        alt="PocketBase logo"
-+                        src="{import.meta.env.BASE_URL}images/logo.png"
-+                        alt="Pocketflare logo"
-                         width="40"
-                         height="40"
-                     />
--                    <span class="txt">Pocket<strong>Base</strong></span>
-+                    <span class="txt">Pocket<strong>flare</strong></span>
-                 </figure>
-             </div>
-             <div class="clearfix" />
-diff --git a/ui/src/components/base/PageWrapper.svelte b/ui/src/components/base/PageWrapper.svelte
-index ebbc765..9f15eaa 100644
---- a/ui/src/components/base/PageWrapper.svelte
-+++ b/ui/src/components/base/PageWrapper.svelte
-@@ -22,8 +22,17 @@
-             </a>
-             <span class="delimiter">|</span>
-             <a href={import.meta.env.PB_RELEASES} target="_blank" rel="noopener noreferrer" title="Releases">
--                <span class="txt">PocketBase {import.meta.env.PB_VERSION}</span>
-+                <span class="txt">
-+                    PocketBase {import.meta.env.PB_VERSION}<span class="cloudflare-suffix">f</span>
-+                </span>
-             </a>
-         {/if}
-     </footer>
- </div>
-+
-+<style>
-+    .cloudflare-suffix {
-+        color: #f38020;
-+        font-weight: 700;
-+    }
-+</style>
-diff --git a/ui/src/components/settings/BackupCreatePanel.svelte b/ui/src/components/settings/BackupCreatePanel.svelte
-deleted file mode 100644
-index f955a61..0000000
---- a/ui/src/components/settings/BackupCreatePanel.svelte
-+++ /dev/null
-@@ -1,138 +0,0 @@
--<script>
--    import { createEventDispatcher, onDestroy } from "svelte";
--    import ApiClient from "@/utils/ApiClient";
--    import CommonHelper from "@/utils/CommonHelper";
--    import { setErrors } from "@/stores/errors";
--    import { addInfoToast, addSuccessToast } from "@/stores/toasts";
--    import OverlayPanel from "@/components/base/OverlayPanel.svelte";
--    import Field from "@/components/base/Field.svelte";
--
--    const dispatch = createEventDispatcher();
--
--    const formId = "backup_create_" + CommonHelper.randomString(5);
--
--    let panel;
--    let name = "";
--    let isSubmitting = false;
--    let submitTimeoutId;
--
--    export function show(newName) {
--        setErrors({});
--        isSubmitting = false;
--        name = newName || "";
--        panel?.show();
--    }
--
--    export function hide() {
--        return panel?.hide();
--    }
--
--    async function submit() {
--        if (isSubmitting) {
--            return;
--        }
--
--        isSubmitting = true;
--
--        clearTimeout(submitTimeoutId);
--        submitTimeoutId = setTimeout(() => {
--            hide();
--        }, 1500);
--
--        try {
--            await ApiClient.backups.create(name, { $cancelKey: formId });
--
--            isSubmitting = false;
--
--            hide();
--            dispatch("submit");
--            addSuccessToast("Successfully generated new backup.");
--        } catch (err) {
--            if (!err.isAbort) {
--                ApiClient.error(err);
--            }
--        }
--
--        clearTimeout(submitTimeoutId);
--        isSubmitting = false;
--    }
--
--    onDestroy(() => {
--        clearTimeout(submitTimeoutId);
--    });
--</script>
--
--<OverlayPanel
--    bind:this={panel}
--    class="backup-create-panel"
--    beforeOpen={() => {
--        if (isSubmitting) {
--            addInfoToast("A backup has already been started, please wait.");
--            return false;
--        }
--
--        return true;
--    }}
--    beforeHide={() => {
--        if (isSubmitting) {
--            addInfoToast(
--                "The backup was started but may take a while to complete. You can come back later.",
--                4500
--            );
--        }
--
--        return true;
--    }}
--    popup
--    on:show
--    on:hide
-->
--    <svelte:fragment slot="header">
--        <h4 class="center txt-break">Initialize new backup</h4>
--    </svelte:fragment>
--
--    <div class="alert alert-info">
--        <div class="icon">
--            <i class="ri-information-line" />
--        </div>
--        <div class="content">
--            <p>
--                Please note that during the backup other concurrent write requests may fail since the
--                database will be temporary "locked" (this usually happens only during the ZIP generation).
--            </p>
--            <p class="txt-bold">
--                If you are using S3 storage for the collections file upload, you'll have to backup them
--                separately since they are not locally stored and will not be included in the final backup!
--            </p>
--        </div>
--    </div>
--
--    <form id={formId} autocomplete="off" on:submit|preventDefault={submit}>
--        <Field class="form-field m-0" name="name" let:uniqueId>
--            <label for={uniqueId}>Backup name</label>
--            <input
--                type="text"
--                id={uniqueId}
--                placeholder={"Leave empty to autogenerate"}
--                pattern="^[a-z0-9_-]+\.zip$"
--                bind:value={name}
--            />
--            <em class="help-block">Must be in the format [a-z0-9_-].zip</em>
--        </Field>
--    </form>
--
--    <svelte:fragment slot="footer">
--        <button type="button" class="btn btn-transparent" on:click={hide} disabled={isSubmitting}>
--            <span class="txt">Cancel</span>
--        </button>
--        <button
--            type="submit"
--            form={formId}
--            class="btn btn-expanded"
--            class:btn-loading={isSubmitting}
--            disabled={isSubmitting}
--        >
--            <span class="txt">Start backup</span>
--        </button>
--    </svelte:fragment>
--</OverlayPanel>
-diff --git a/ui/src/components/settings/BackupRestorePanel.svelte b/ui/src/components/settings/BackupRestorePanel.svelte
-deleted file mode 100644
-index 76397ef..0000000
---- a/ui/src/components/settings/BackupRestorePanel.svelte
-+++ /dev/null
-@@ -1,144 +0,0 @@
--<script>
--    import ApiClient from "@/utils/ApiClient";
--    import CommonHelper from "@/utils/CommonHelper";
--    import { setErrors } from "@/stores/errors";
--    import { addErrorToast } from "@/stores/toasts";
--    import OverlayPanel from "@/components/base/OverlayPanel.svelte";
--    import Field from "@/components/base/Field.svelte";
--    import CopyIcon from "@/components/base/CopyIcon.svelte";
--    import { onDestroy } from "svelte";
--
--    const formId = "backup_restore_" + CommonHelper.randomString(5);
--
--    let panel;
--    let name = "";
--    let nameConfirm = "";
--    let isSubmitting = false;
--    let reloadTimeoutId = null;
--
--    $: canSubmit = nameConfirm != "" && name == nameConfirm;
--
--    export function show(backupName) {
--        setErrors({});
--        nameConfirm = "";
--        name = backupName;
--        isSubmitting = false;
--        panel?.show();
--    }
--
--    export function hide() {
--        return panel?.hide();
--    }
--
--    async function submit() {
--        if (!canSubmit || isSubmitting) {
--            return;
--        }
--
--        clearTimeout(reloadTimeoutId);
--
--        isSubmitting = true;
--
--        try {
--            await ApiClient.backups.restore(name);
--
--            // optimistic restore page reload
--            reloadTimeoutId = setTimeout(() => {
--                window.location.reload();
--            }, 2000);
--        } catch (err) {
--            clearTimeout(reloadTimeoutId);
--
--            if (!err?.isAbort) {
--                isSubmitting = false;
--                addErrorToast(err.response?.message || err.message);
--            }
--        }
--    }
--
--    onDestroy(() => {
--        clearTimeout(reloadTimeoutId);
--    });
--</script>
--
--<OverlayPanel
--    bind:this={panel}
--    class="backup-restore-panel"
--    overlayClose={!isSubmitting}
--    escClose={!isSubmitting}
--    beforeHide={() => !isSubmitting}
--    popup
--    on:show
--    on:hide
-->
--    <svelte:fragment slot="header">
--        <h4 class="popup-title txt-ellipsis">Restore <strong>{name}</strong></h4>
--    </svelte:fragment>
--
--    <div class="alert alert-danger">
--        <div class="icon">
--            <i class="ri-alert-line" />
--        </div>
--        <div class="content">
--            <p class="txt-bold">Please proceed with caution and use it only with trusted backups!</p>
--
--            <p>Backup restore is experimental and works only on UNIX based systems.</p>
--            <p>
--                The restore operation will attempt to replace your existing <code>pb_data</code> with the one from
--                the backup and will restart the application process.
--            </p>
--            <p>
--                This means that on success all of your data (including app settings, users, superusers, etc.)
--                will be replaced with the ones from the backup.
--            </p>
--            <p>
--                Nothing will happen if the backup is invalid (ex. missing
--                <code>data.db</code> file).
--            </p>
--            <p>Below is an oversimplified version of the restore flow:</p>
--            <ol>
--                <li>Replaces the current <code>pb_data</code> with the content from the backup</li>
--                <li>Triggers app restart</li>
--                <li>Applies all migrations that are missing in the restored <code>pb_data</code></li>
--                <li>Initializes the app server as usual</li>
--            </ol>
--        </div>
--    </div>
--
--    <div class="content m-b-xs">
--        Type the backup name
--        <div class="label">
--            <span class="txt">{name}</span>
--            <CopyIcon value={name} />
--        </div>
--        to confirm:
--    </div>
--
--    <form id={formId} autocomplete="off" on:submit|preventDefault={submit}>
--        <Field class="form-field required m-0" name="name" let:uniqueId>
--            <label for={uniqueId}>Backup name</label>
--            <input type="text" id={uniqueId} required bind:value={nameConfirm} />
--        </Field>
--    </form>
--
--    <svelte:fragment slot="footer">
--        <button type="button" class="btn btn-transparent" on:click={hide} disabled={isSubmitting}>
--            Cancel
--        </button>
--        <button
--            type="submit"
--            form={formId}
--            class="btn btn-expanded"
--            class:btn-loading={isSubmitting}
--            disabled={!canSubmit || isSubmitting}
--        >
--            <span class="txt">Restore backup</span>
--        </button>
--    </svelte:fragment>
--</OverlayPanel>
--
--<style>
--    .popup-title {
--        max-width: 80%;
--    }
--</style>
-diff --git a/ui/src/components/settings/BackupUploadButton.svelte b/ui/src/components/settings/BackupUploadButton.svelte
-deleted file mode 100644
-index c21e527..0000000
---- a/ui/src/components/settings/BackupUploadButton.svelte
-+++ /dev/null
-@@ -1,94 +0,0 @@
--<script>
--    import { createEventDispatcher, onDestroy } from "svelte";
--    import ApiClient from "@/utils/ApiClient";
--    import tooltip from "@/actions/tooltip";
--    import { addSuccessToast, addErrorToast } from "@/stores/toasts";
--    import { confirm } from "@/stores/confirmation";
--
--    const dispatch = createEventDispatcher();
--    const backupRequestKey = "upload_backup";
--
--    let classes = "";
--    export { classes as class };
--
--    let fileInput;
--    let isUploading = false;
--
--    function resetSelectedFile() {
--        if (fileInput) {
--            fileInput.value = "";
--        }
--    }
--
--    function uploadConfirm(file) {
--        if (!file) {
--            return;
--        }
--
--        confirm(
--            `Note that we don't perform validations for the uploaded backup files. Proceed with caution and only if you trust the source.\n\n` +
--                `Do you really want to upload "${file.name}"?`,
--            () => {
--                upload(file);
--            },
--            () => {
--                resetSelectedFile();
--            },
--        );
--    }
--
--    async function upload(file) {
--        if (isUploading || !file) {
--            return;
--        }
--
--        isUploading = true;
--
--        const data = new FormData();
--        data.set("file", file);
--
--        try {
--            await ApiClient.backups.upload(data, { requestKey: backupRequestKey });
--            isUploading = false;
--            dispatch("success");
--            addSuccessToast("Successfully uploaded a new backup.");
--        } catch (err) {
--            if (!err.isAbort) {
--                isUploading = false;
--                if (err.response?.data?.file?.message) {
--                    addErrorToast(err.response.data.file.message);
--                } else {
--                    ApiClient.error(err);
--                }
--            }
--        }
--
--        resetSelectedFile();
--    }
--
--    onDestroy(() => {
--        ApiClient.cancelRequest(backupRequestKey);
--    });
--</script>
--
--<button
--    type="button"
--    class="btn btn-circle btn-transparent {classes}"
--    class:btn-loading={isUploading}
--    class:btn-disabled={isUploading}
--    aria-label="Upload backup"
--    use:tooltip={"Upload backup"}
--    on:click={() => fileInput?.click()}
-->
--    <i class="ri-upload-cloud-line" />
--</button>
--
--<input
--    bind:this={fileInput}
--    type="file"
--    accept="application/zip"
--    class="hidden"
--    on:change={(e) => {
--        uploadConfirm(e?.target?.files?.[0]);
--    }}
--/>
-diff --git a/ui/src/components/settings/BackupsList.svelte b/ui/src/components/settings/BackupsList.svelte
-index 3cae1c9..faf4412 100644
---- a/ui/src/components/settings/BackupsList.svelte
-+++ b/ui/src/components/settings/BackupsList.svelte
-@@ -1,24 +1,17 @@
- <script>
--    import { onMount } from "svelte";
-     import { slide } from "svelte/transition";
-     import ApiClient from "@/utils/ApiClient";
-     import CommonHelper from "@/utils/CommonHelper";
-     import tooltip from "@/actions/tooltip";
-     import { confirm } from "@/stores/confirmation";
-     import { addSuccessToast } from "@/stores/toasts";
--    import BackupCreatePanel from "@/components/settings/BackupCreatePanel.svelte";
--    import BackupRestorePanel from "@/components/settings/BackupRestorePanel.svelte";
- 
--    let createPanel;
--    let restorePanel;
-     let backups = [];
-     let isLoading = false;
-     let isDownloading = {};
-     let isDeleting = {};
--    let canBackup = true;
- 
-     loadBackups();
--    loadCanBackup();
- 
-     export async function loadBackups() {
-         isLoading = true;
-@@ -92,29 +85,6 @@
-         delete isDeleting[name];
-         isDeleting = isDeleting;
-     }
--
--    async function loadCanBackup() {
--        try {
--            const health = await ApiClient.health.check({ $autoCancel: false });
--            const oldCanBackup = canBackup;
--            canBackup = health?.data?.canBackup || false;
--
--            // reload backups list
--            if (oldCanBackup != canBackup && canBackup) {
--                loadBackups();
--            }
--        } catch (_) {}
--    }
--
--    onMount(() => {
--        let canBackupIntervalId = setInterval(() => {
--            loadCanBackup();
--        }, 3000);
--
--        return () => {
--            clearInterval(canBackupIntervalId);
--        };
--    });
- </script>
- 
- <div class="list list-compact">
-@@ -147,16 +117,6 @@
-                         >
-                             <i class="ri-download-line" />
-                         </button>
--                        <button
--                            type="button"
--                            class="btn btn-sm btn-circle btn-hint btn-transparent"
--                            disabled={isDeleting[backup.key]}
--                            aria-label="Restore"
--                            use:tooltip={"Restore"}
--                            on:click|preventDefault={() => restorePanel.show(backup.key)}
--                        >
--                            <i class="ri-restart-line" />
--                        </button>
-                         <button
-                             type="button"
-                             class="btn btn-sm btn-circle btn-hint btn-transparent"
-@@ -177,34 +137,8 @@
-             {/each}
-         {/if}
-     </div>
--
--    <div class="list-item list-item-btn">
--        <button
--            type="button"
--            class="btn btn-block btn-transparent"
--            disabled={isLoading || !canBackup}
--            on:click={() => createPanel?.show()}
--        >
--            {#if canBackup}
--                <i class="ri-play-circle-line" />
--                <span class="txt">Initialize new backup</span>
--            {:else}
--                <span class="loader loader-sm" />
--                <span class="txt">Backup/restore operation is in process</span>
--            {/if}
--        </button>
--    </div>
- </div>
- 
--<BackupCreatePanel
--    bind:this={createPanel}
--    on:submit={() => {
--        loadBackups();
--    }}
--/>
--
--<BackupRestorePanel bind:this={restorePanel} />
--
- <style lang="scss">
-     .list-content {
-         overflow: auto;
-diff --git a/ui/src/components/settings/PageBackups.svelte b/ui/src/components/settings/PageBackups.svelte
-index 0fcc4f3..6a7475f 100644
---- a/ui/src/components/settings/PageBackups.svelte
-+++ b/ui/src/components/settings/PageBackups.svelte
-@@ -1,99 +1,9 @@
- <script>
--    import { slide } from "svelte/transition";
--    import ApiClient from "@/utils/ApiClient";
--    import CommonHelper from "@/utils/CommonHelper";
-     import { pageTitle } from "@/stores/app";
--    import { removeError, setErrors } from "@/stores/errors";
--    import { addSuccessToast } from "@/stores/toasts";
--    import tooltip from "@/actions/tooltip";
-     import PageWrapper from "@/components/base/PageWrapper.svelte";
--    import Field from "@/components/base/Field.svelte";
--    import Toggler from "@/components/base/Toggler.svelte";
--    import RefreshButton from "@/components/base/RefreshButton.svelte";
-     import SettingsSidebar from "@/components/settings/SettingsSidebar.svelte";
--    import BackupsList from "@/components/settings/BackupsList.svelte";
--    import S3Fields from "@/components/settings/S3Fields.svelte";
--    import BackupUploadButton from "@/components/settings/BackupUploadButton.svelte";
- 
-     $pageTitle = "Backups";
--
--    let backupsListComponent;
--    let originalFormSettings = {};
--    let formSettings = {};
--    let isLoading = false;
--    let isSaving = false;
--    let initialHash = "";
--    let enableAutoBackups = false;
--    let showBackupsSettings = false;
--    let isTesting = false;
--    let testError = null;
--
--    $: initialHash = JSON.stringify(originalFormSettings);
--
--    $: hasChanges = initialHash != JSON.stringify(formSettings);
--
--    $: if (!enableAutoBackups && formSettings?.backups?.cron) {
--        removeError("backups.cron");
--        formSettings.backups.cron = "";
--    }
--
--    loadSettings();
--
--    async function loadSettings() {
--        isLoading = true;
--
--        try {
--            const settings = (await ApiClient.settings.getAll()) || {};
--            init(settings);
--        } catch (err) {
--            ApiClient.error(err);
--        }
--
--        isLoading = false;
--    }
--
--    async function save() {
--        if (isSaving || !hasChanges) {
--            return;
--        }
--
--        isSaving = true;
--
--        try {
--            const settings = await ApiClient.settings.update(CommonHelper.filterRedactedProps(formSettings));
--
--            setErrors({});
--
--            await refreshList();
--
--            init(settings);
--
--            addSuccessToast("Successfully saved application settings.");
--        } catch (err) {
--            ApiClient.error(err);
--        }
--
--        isSaving = false;
--    }
--
--    function init(settings = {}) {
--        formSettings = {
--            backups: settings?.backups || {},
--        };
--
--        enableAutoBackups = formSettings.backups.cron != "";
--
--        originalFormSettings = JSON.parse(JSON.stringify(formSettings));
--    }
--
--    function reset() {
--        formSettings = JSON.parse(JSON.stringify(originalFormSettings || { backups: {} }));
--        enableAutoBackups = formSettings.backups.cron != "";
--    }
--
--    async function refreshList() {
--        return backupsListComponent?.loadBackups();
--    }
- </script>
- 
- <SettingsSidebar />
-@@ -107,196 +17,27 @@
-     </header>
- 
-     <div class="wrapper">
--        <div class="panel" autocomplete="off" on:submit|preventDefault={save}>
--            <div class="flex m-b-sm flex-gap-10">
--                <span class="txt-xl">Backup and restore your PocketBase data</span>
--                <RefreshButton class="btn-sm" tooltip={"Refresh"} on:refresh={refreshList} />
--                <BackupUploadButton class="btn-sm" on:success={refreshList} />
-+        <div class="panel">
-+            <div class="content txt-xl m-b-base">
-+                <p>Use D1 Time Travel or D1 export for database backups. Back up R2 storage separately.</p>
-             </div>
- 
--            <BackupsList bind:this={backupsListComponent} />
--
--            <hr />
--
--            <button
--                type="button"
--                class="btn btn-secondary"
--                class:btn-loading={isLoading}
--                disabled={isLoading}
--                on:click={() => (showBackupsSettings = !showBackupsSettings)}
--            >
--                <span class="txt">Backups options</span>
--                {#if showBackupsSettings}
--                    <i class="ri-arrow-up-s-line" />
--                {:else}
--                    <i class="ri-arrow-down-s-line" />
--                {/if}
--            </button>
--
--            {#if showBackupsSettings && !isLoading}
--                <form
--                    class="block"
--                    autocomplete="off"
--                    on:submit|preventDefault={save}
--                    transition:slide={{ duration: 150 }}
--                >
--                    <Field class="form-field form-field-toggle m-t-base m-b-0" let:uniqueId>
--                        <input type="checkbox" id={uniqueId} bind:checked={enableAutoBackups} />
--                        <label for={uniqueId}>Enable auto backups</label>
--                    </Field>
--
--                    {#if enableAutoBackups}
--                        <div class="block" transition:slide={{ duration: 150 }}>
--                            <div class="grid p-t-base p-b-sm">
--                                <div class="col-lg-6">
--                                    <Field class="form-field required" name="backups.cron" let:uniqueId>
--                                        <label for={uniqueId}>Cron expression</label>
--                                        <!-- svelte-ignore a11y-autofocus -->
--                                        <input
--                                            required
--                                            type="text"
--                                            id={uniqueId}
--                                            class="txt-lg txt-mono"
--                                            placeholder="* * * * *"
--                                            autofocus={!originalFormSettings?.backups?.cron}
--                                            bind:value={formSettings.backups.cron}
--                                        />
--                                        <div class="form-field-addon">
--                                            <button type="button" class="btn btn-sm btn-outline p-r-0">
--                                                <span class="txt">Presets</span>
--                                                <i class="ri-arrow-drop-down-fill" />
--                                                <Toggler class="dropdown dropdown-nowrap dropdown-right">
--                                                    <button
--                                                        type="button"
--                                                        class="dropdown-item closable"
--                                                        on:click={() => {
--                                                            formSettings.backups.cron = "0 0 * * *";
--                                                        }}
--                                                    >
--                                                        <span class="txt">Every day at 00:00h</span>
--                                                    </button>
--                                                    <button
--                                                        type="button"
--                                                        class="dropdown-item closable"
--                                                        on:click={() => {
--                                                            formSettings.backups.cron = "0 0 * * 0";
--                                                        }}
--                                                    >
--                                                        <span class="txt">Every sunday at 00:00h</span>
--                                                    </button>
--                                                    <button
--                                                        type="button"
--                                                        class="dropdown-item closable"
--                                                        on:click={() => {
--                                                            formSettings.backups.cron = "0 0 * * 1,3";
--                                                        }}
--                                                    >
--                                                        <span class="txt">Every Mon and Wed at 00:00h</span>
--                                                    </button>
--                                                    <button
--                                                        type="button"
--                                                        class="dropdown-item closable"
--                                                        on:click={() => {
--                                                            formSettings.backups.cron = "0 0 1 * *";
--                                                        }}
--                                                    >
--                                                        <span class="txt">
--                                                            Every first day of the month at 00:00h
--                                                        </span>
--                                                    </button>
--                                                </Toggler>
--                                            </button>
--                                        </div>
--                                        <div class="help-block">
--                                            <!-- prettier-ignore -->
--                                            <p>
--                                                Supports numeric list, steps, ranges or
--                                                <span
--                                                    class="link-primary"
--                                                    use:tooltip={"@yearly\n@annually\n@monthly\n@weekly\n@daily\n@midnight\n@hourly"}
--                                                >macros</span>.
--                                                <br>
--                                                The timezone is in UTC.
--                                            </p>
--                                        </div>
--                                    </Field>
--                                </div>
--                                <div class="col-lg-6">
--                                    <Field
--                                        class="form-field required"
--                                        name="backups.cronMaxKeep"
--                                        let:uniqueId
--                                    >
--                                        <label for={uniqueId}>Max @auto backups to keep</label>
--                                        <input
--                                            type="number"
--                                            id={uniqueId}
--                                            min="1"
--                                            bind:value={formSettings.backups.cronMaxKeep}
--                                        />
--                                    </Field>
--                                </div>
--                            </div>
--                        </div>
--                    {/if}
--
--                    <div class="clearfix m-b-base" />
--
--                    <S3Fields
--                        toggleLabel="Store backups in S3 storage"
--                        testFilesystem="backups"
--                        configKey="backups.s3"
--                        originalConfig={originalFormSettings.backups?.s3}
--                        bind:config={formSettings.backups.s3}
--                        bind:isTesting
--                        bind:testError
--                    />
--
--                    <div class="flex">
--                        <div class="flex-fill" />
--
--                        {#if formSettings.backups?.s3?.enabled && !hasChanges && !isSaving}
--                            {#if isTesting}
--                                <span class="loader loader-sm" />
--                            {:else if testError}
--                                <div
--                                    class="label label-sm label-warning entrance-right"
--                                    use:tooltip={testError.data?.message}
--                                >
--                                    <i class="ri-error-warning-line txt-warning" />
--                                    <span class="txt">Failed to establish S3 connection</span>
--                                </div>
--                            {:else}
--                                <div class="label label-sm label-success entrance-right">
--                                    <i class="ri-checkbox-circle-line txt-success" />
--                                    <span class="txt">S3 connected successfully</span>
--                                </div>
--                            {/if}
--                        {/if}
--
--                        {#if hasChanges}
--                            <button
--                                type="button"
--                                class="btn btn-hint btn-transparent"
--                                disabled={!hasChanges || isSaving}
--                                on:click={() => reset()}
--                            >
--                                <span class="txt">Reset</span>
--                            </button>
--                        {/if}
--
--                        <button
--                            type="submit"
--                            class="btn btn-expanded"
--                            class:btn-loading={isSaving}
--                            disabled={!hasChanges || isSaving}
--                            on:click={() => save()}
--                        >
--                            <span class="txt">Save changes</span>
--                        </button>
--                    </div>
--                </form>
--            {/if}
-+            <div class="alert alert-pocketflare m-0">
-+                <div class="icon">
-+                    <i class="ri-error-warning-line" />
-+                </div>
-+                <div class="content">
-+                    <p>
-+                        PocketBase backup creation, restore, auto backups, and backup S3 settings are not
-+                        available in Pocketflare.
-+                    </p>
-+                    <p>
-+                        PocketBase backups archive local <code>pb_data</code>, but Pocketflare stores
-+                        application data in D1 and uploaded files in R2. Use D1 Time Travel or D1 export
-+                        for database backups, and back up the <code>STORAGE</code> R2 bucket separately.
-+                    </p>
-+                </div>
-+            </div>
-         </div>
-     </div>
- </PageWrapper>
-diff --git a/ui/src/components/settings/PageStorage.svelte b/ui/src/components/settings/PageStorage.svelte
-index 1fd8167..07b4786 100644
---- a/ui/src/components/settings/PageStorage.svelte
-+++ b/ui/src/components/settings/PageStorage.svelte
-@@ -1,80 +1,9 @@
- <script>
--    import { slide } from "svelte/transition";
--    import ApiClient from "@/utils/ApiClient";
--    import CommonHelper from "@/utils/CommonHelper";
-     import { pageTitle } from "@/stores/app";
--    import { setErrors } from "@/stores/errors";
--    import { removeAllToasts, addSuccessToast } from "@/stores/toasts";
--    import tooltip from "@/actions/tooltip";
-     import PageWrapper from "@/components/base/PageWrapper.svelte";
-     import SettingsSidebar from "@/components/settings/SettingsSidebar.svelte";
--    import S3Fields from "@/components/settings/S3Fields.svelte";
- 
-     $pageTitle = "Files storage";
--
--    const testRequestKey = "s3_test_request";
--
--    let originalFormSettings = {};
--    let formSettings = {};
--    let isLoading = false;
--    let isSaving = false;
--    let isTesting = false;
--    let testError = null;
--
--    $: initialHash = JSON.stringify(originalFormSettings);
--
--    $: hasChanges = initialHash != JSON.stringify(formSettings);
--
--    loadSettings();
--
--    async function loadSettings() {
--        isLoading = true;
--
--        try {
--            const settings = (await ApiClient.settings.getAll()) || {};
--            init(settings);
--        } catch (err) {
--            ApiClient.error(err);
--        }
--
--        isLoading = false;
--    }
--
--    async function save() {
--        if (isSaving || !hasChanges) {
--            return;
--        }
--
--        isSaving = true;
--
--        try {
--            ApiClient.cancelRequest(testRequestKey);
--            const settings = await ApiClient.settings.update(CommonHelper.filterRedactedProps(formSettings));
--            setErrors({});
--
--            await init(settings);
--
--            removeAllToasts();
--
--            addSuccessToast("Successfully saved storage settings.");
--        } catch (err) {
--            ApiClient.error(err);
--        }
--
--        isSaving = false;
--    }
--
--    async function init(settings = {}) {
--        formSettings = {
--            s3: settings?.s3 || {},
--        };
--
--        originalFormSettings = JSON.parse(JSON.stringify(formSettings));
--    }
--
--    async function reset() {
--        formSettings = JSON.parse(JSON.stringify(originalFormSettings || {}));
--    }
- </script>
- 
- <SettingsSidebar />
-@@ -88,113 +17,27 @@
-     </header>
- 
-     <div class="wrapper">
--        <form class="panel" autocomplete="off" on:submit|preventDefault={() => save()}>
-+        <div class="panel">
-             <div class="content txt-xl m-b-base">
--                <p>By default PocketBase uses the local file system to store uploaded files.</p>
--                <p>
--                    If you have limited disk space, you could optionally connect to an S3 compatible storage.
--                </p>
-+                <p>Pocketflare stores uploaded files in Cloudflare R2.</p>
-             </div>
- 
--            {#if isLoading}
--                <div class="loader" />
--            {:else}
--                <S3Fields
--                    toggleLabel="Use S3 storage"
--                    originalConfig={originalFormSettings.s3}
--                    bind:config={formSettings.s3}
--                    bind:isTesting
--                    bind:testError
--                >
--                    {#if originalFormSettings.s3?.enabled != formSettings.s3.enabled}
--                        <div transition:slide={{ duration: 150 }}>
--                            <div class="alert alert-warning m-0">
--                                <div class="icon">
--                                    <i class="ri-error-warning-line" />
--                                </div>
--                                <div class="content">
--                                    If you have existing uploaded files, you'll have to migrate them manually
--                                    from the
--                                    <strong>
--                                        {originalFormSettings.s3?.enabled
--                                            ? "S3 storage"
--                                            : "local file system"}
--                                    </strong>
--                                    to the
--                                    <strong
--                                        >{formSettings.s3.enabled
--                                            ? "S3 storage"
--                                            : "local file system"}</strong
--                                    >.
--                                    <br />
--                                    There are numerous command line tools that can help you, such as:
--                                    <a
--                                        href="https://github.com/rclone/rclone"
--                                        target="_blank"
--                                        rel="noopener noreferrer"
--                                        class="txt-bold"
--                                    >
--                                        rclone
--                                    </a>,
--                                    <a
--                                        href="https://github.com/peak/s5cmd"
--                                        target="_blank"
--                                        rel="noopener noreferrer"
--                                        class="txt-bold"
--                                    >
--                                        s5cmd
--                                    </a>, etc.
--                                </div>
--                            </div>
--                            <div class="clearfix m-t-base" />
--                        </div>
--                    {/if}
--                </S3Fields>
--
--                <div class="flex">
--                    <div class="flex-fill" />
--
--                    {#if formSettings.s3?.enabled && !hasChanges && !isSaving}
--                        {#if isTesting}
--                            <span class="loader loader-sm" />
--                        {:else if testError}
--                            <div
--                                class="label label-sm label-warning entrance-right"
--                                use:tooltip={testError.data?.message}
--                            >
--                                <i class="ri-error-warning-line txt-warning" />
--                                <span class="txt">Failed to establish S3 connection</span>
--                            </div>
--                        {:else}
--                            <div class="label label-sm label-success entrance-right">
--                                <i class="ri-checkbox-circle-line txt-success" />
--                                <span class="txt">S3 connected successfully</span>
--                            </div>
--                        {/if}
--                    {/if}
--
--                    {#if hasChanges}
--                        <button
--                            type="button"
--                            class="btn btn-transparent btn-hint"
--                            disabled={isSaving}
--                            on:click={() => reset()}
--                        >
--                            <span class="txt">Reset</span>
--                        </button>
--                    {/if}
--
--                    <button
--                        type="submit"
--                        class="btn btn-expanded"
--                        class:btn-loading={isSaving}
--                        disabled={!hasChanges || isSaving}
--                        on:click={() => save()}
--                    >
--                        <span class="txt">Save changes</span>
--                    </button>
-+            <div class="alert alert-pocketflare m-0">
-+                <div class="icon">
-+                    <i class="ri-information-line" />
-+                </div>
-+                <div class="content">
-+                    <p>
-+                        The upstream PocketBase S3 storage setting is not available in Pocketflare.
-+                        File fields use the Worker <code>STORAGE</code> R2 binding directly, so no
-+                        PocketBase S3 credentials are needed here.
-+                    </p>
-+                    <p>
-+                        Existing PocketBase local or S3 files should be migrated into the configured R2
-+                        bucket under the standard <code>storage/</code> prefix.
-+                    </p>
-                 </div>
--            {/if}
--        </form>
-+            </div>
-+        </div>
-     </div>
- </PageWrapper>
-diff --git a/ui/src/components/settings/S3Fields.svelte b/ui/src/components/settings/S3Fields.svelte
-deleted file mode 100644
-index 8e4f47e..0000000
---- a/ui/src/components/settings/S3Fields.svelte
-+++ /dev/null
-@@ -1,154 +0,0 @@
--<script>
--    import { onMount } from "svelte";
--    import { slide } from "svelte/transition";
--    import ApiClient from "@/utils/ApiClient";
--    import tooltip from "@/actions/tooltip";
--    import { removeError } from "@/stores/errors";
--    import Field from "@/components/base/Field.svelte";
--    import RedactedPasswordInput from "@/components/base/RedactedPasswordInput.svelte";
--
--    const testRequestKey = "s3_test_request";
--
--    export let originalConfig = {};
--    export let config = {};
--    export let configKey = "s3";
--    export let toggleLabel = "Enable S3";
--    export let testFilesystem = "storage"; // storage or backups
--    export let testError = null;
--    export let isTesting = false;
--
--    let testTimeoutId = null;
--    let testDebounceId = null;
--    let maskSecret = false;
--
--    $: if (originalConfig?.enabled) {
--        refreshMaskSecret();
--        testConnectionWithDebounce(100);
--    }
--
--    // clear s3 errors on disable
--    $: if (!config.enabled) {
--        removeError(configKey);
--    }
--
--    function refreshMaskSecret() {
--        maskSecret = !!originalConfig?.accessKey;
--    }
--
--    function testConnectionWithDebounce(timeout) {
--        isTesting = true;
--        clearTimeout(testDebounceId);
--        testDebounceId = setTimeout(() => {
--            testConnection();
--        }, timeout);
--    }
--
--    async function testConnection() {
--        testError = null;
--
--        if (!config.enabled) {
--            isTesting = false;
--            return testError; // nothing to test
--        }
--
--        // auto cancel the test request after 30sec
--        ApiClient.cancelRequest(testRequestKey);
--        clearTimeout(testTimeoutId);
--        testTimeoutId = setTimeout(() => {
--            ApiClient.cancelRequest(testRequestKey);
--            testError = new Error("S3 test connection timeout.");
--            isTesting = false;
--        }, 30000);
--
--        isTesting = true;
--
--        let err;
--
--        try {
--            await ApiClient.settings.testS3(testFilesystem, {
--                $cancelKey: testRequestKey,
--            });
--        } catch (e) {
--            err = e;
--        }
--
--        if (!err?.isAbort) {
--            testError = err;
--            isTesting = false;
--            clearTimeout(testTimeoutId);
--        }
--
--        return testError;
--    }
--
--    onMount(() => {
--        return () => {
--            clearTimeout(testTimeoutId);
--            clearTimeout(testDebounceId);
--        };
--    });
--</script>
--
--<Field class="form-field form-field-toggle" let:uniqueId>
--    <input type="checkbox" id={uniqueId} required bind:checked={config.enabled} />
--    <label for={uniqueId}>{toggleLabel}</label>
--</Field>
--
--<slot {isTesting} {testError} enabled={config.enabled} />
--
--{#if config.enabled}
--    <div class="grid" transition:slide={{ duration: 150 }}>
--        <div class="col-lg-6">
--            <Field class="form-field required" name="{configKey}.endpoint" let:uniqueId>
--                <label for={uniqueId}>Endpoint</label>
--                <input type="text" id={uniqueId} required bind:value={config.endpoint} />
--            </Field>
--        </div>
--        <div class="col-lg-3">
--            <Field class="form-field required" name="{configKey}.bucket" let:uniqueId>
--                <label for={uniqueId}>Bucket</label>
--                <input type="text" id={uniqueId} required bind:value={config.bucket} />
--            </Field>
--        </div>
--        <div class="col-lg-3">
--            <Field class="form-field required" name="{configKey}.region" let:uniqueId>
--                <label for={uniqueId}>Region</label>
--                <input type="text" id={uniqueId} required bind:value={config.region} />
--            </Field>
--        </div>
--        <div class="col-lg-6">
--            <Field class="form-field required" name="{configKey}.accessKey" let:uniqueId>
--                <label for={uniqueId}>Access key</label>
--                <input type="text" id={uniqueId} required bind:value={config.accessKey} />
--            </Field>
--        </div>
--        <div class="col-lg-6">
--            <Field class="form-field required" name="{configKey}.secret" let:uniqueId>
--                <label for={uniqueId}>Secret</label>
--                <RedactedPasswordInput
--                    required
--                    id={uniqueId}
--                    bind:mask={maskSecret}
--                    bind:value={config.secret}
--                />
--            </Field>
--        </div>
--        <div class="col-lg-12">
--            <Field class="form-field" name="{configKey}.forcePathStyle" let:uniqueId>
--                <input type="checkbox" id={uniqueId} bind:checked={config.forcePathStyle} />
--                <label for={uniqueId}>
--                    <span class="txt">Force path-style addressing</span>
--                    <i
--                        class="ri-information-line link-hint"
--                        use:tooltip={{
--                            text: 'Forces the request to use path-style addressing, eg. "https://s3.amazonaws.com/BUCKET/KEY" instead of the default "https://BUCKET.s3.amazonaws.com/KEY".',
--                            position: "top",
--                        }}
--                    />
--                </label>
--            </Field>
--        </div>
--        <!-- margin helper -->
--        <div class="col-lg-12" />
--    </div>
--{/if}
-diff --git a/ui/src/scss/_alert.scss b/ui/src/scss/_alert.scss
-index cd55421..1678c56 100644
---- a/ui/src/scss/_alert.scss
-+++ b/ui/src/scss/_alert.scss
-@@ -80,6 +80,19 @@
-             color: var(--warningColor);
-         }
-     }
-+    &.alert-pocketflare {
-+        background: #fff1e6;
-+        box-shadow: inset 4px 0 0 #f38020;
-+        border: 1px solid rgba(243, 128, 32, 0.35);
-+        .icon {
-+            color: #f38020;
-+            border-right-color: rgba(243, 128, 32, 0.2);
-+        }
-+        code,
-+        hr {
-+            background: rgba(243, 128, 32, 0.14);
-+        }
-+    }
-     &.alert-success {
-         background: var(--successAltColor);
-         .icon {

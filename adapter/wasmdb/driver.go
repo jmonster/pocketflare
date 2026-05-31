@@ -76,7 +76,7 @@ func init() {
 // RunInTransaction (or the underlying dbx.Transactional) to group multiple
 // statements:
 //
-//   - DrySubmit (deprecated in PB v0.36.9): used for pre-submit validation.
+//   - DrySubmit (deprecated in earlier PocketBase releases): used for pre-submit validation.
 //     The temp save will persist even on "rollback." This is acceptable
 //     because DrySubmit is only called opportunistically and the actual
 //     Submit() path does not depend on it — the real create/update call

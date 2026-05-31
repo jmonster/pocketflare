@@ -18,15 +18,15 @@ index c756c4a..f0dcbf8 100644
 @@ -24,7 +24,6 @@ import (
  	"github.com/pocketbase/pocketbase/tools/filesystem/internal/s3blob/s3"
  	"github.com/pocketbase/pocketbase/tools/list"
- 
+
 -	// explicit webp decoder because disintegration/imaging does not support webp
  	_ "golang.org/x/image/webp"
  )
- 
+
 @@ -68,6 +67,13 @@ func NewS3(
  	return &System{ctx: ctx, bucket: blob.NewBucket(drv)}, nil
  }
- 
+
 +// NewBlob initializes a new filesystem instance backed by the given blob.Driver.
 +//
 +// NB! Make sure to call `Close()` after you are done working with it.
@@ -40,14 +40,14 @@ index c756c4a..f0dcbf8 100644
 @@ -500,15 +506,12 @@ func (s *System) CreateThumb(originalKey string, thumbKey, thumbSize string) err
  		return errors.New("thumb width and height cannot be zero at the same time")
  	}
- 
+
 -	// fetch the original
  	r, readErr := s.GetReader(originalKey)
  	if readErr != nil {
  		return readErr
  	}
  	defer r.Close()
- 
+
 -	// create imaging object from the original reader
 -	// (note: only the first frame for animated image formats)
  	img, decodeErr := imaging.Decode(r, imaging.AutoOrientation(true))
@@ -55,7 +55,7 @@ index c756c4a..f0dcbf8 100644
  		return decodeErr
 @@ -517,21 +520,16 @@ func (s *System) CreateThumb(originalKey string, thumbKey, thumbSize string) err
  	var thumbImg *image.NRGBA
- 
+
  	if width == 0 || height == 0 {
 -		// force resize preserving aspect ratio
  		thumbImg = imaging.Resize(img, width, height, imaging.Linear)
@@ -83,23 +83,23 @@ index c756c4a..f0dcbf8 100644
  		opts.ContentType = "image/png"
  		format = imaging.PNG
  	}
- 
+
 -	// open a thumb storage writer (aka. prepare for upload)
  	w, err := s.bucket.NewWriter(s.ctx, thumbKey, opts)
  	if err != nil {
  		return err
  	}
- 
+
 -	// thumb encode (aka. upload)
  	err = imaging.Encode(w, thumbImg, format)
  	if err != nil {
  		w.Close()
  		return err
  	}
- 
+
 -	// check for close errors to ensure that the thumb was really saved
  	return w.Close()
  }
--- 
+--
 2.50.1 (Apple Git-155)
 

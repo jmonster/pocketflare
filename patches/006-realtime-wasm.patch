@@ -1,24 +1,5 @@
-From 348b12f5613b7cd90ea2704ed77f7adb1a49a124 Mon Sep 17 00:00:00 2001
-From: Johnny D <goforjohnny@icloud.com>
-Date: Sat, 30 May 2026 12:00:00 -0400
-Subject: [PATCH 6/6] feat: add WasmRealtimeClientProvider for external SSE
- transport
-
-Adds a package-level function variable that, when set, is called as a
-fallback when a realtime client is not found in the in-memory broker.
-This allows Durable Objects (or other external connection managers) to
-own the SSE transport while PocketBase retains auth and subscription
-matching.
-
-Also modifies realtimeSetSubscriptions to use the provider when a
-client is not found in the broker, creating and registering a new
-client on the fly.
----
- apis/realtime.go | 19 ++++++++++++++++++-
- 1 file changed, 18 insertions(+), 1 deletion(-)
-
 diff --git a/apis/realtime.go b/apis/realtime.go
-index 72b830b..cc8f55f 100644
+index 1cfe83d..481ecf5 100644
 --- a/apis/realtime.go
 +++ b/apis/realtime.go
 @@ -22,6 +22,12 @@ import (
@@ -34,7 +15,7 @@ index 72b830b..cc8f55f 100644
  // note: the chunk size is arbitrary chosen and may change in the future
  const clientsChunkSize = 150
 
-@@ -183,7 +189,16 @@ func realtimeSetSubscriptions(e *core.RequestEvent) error {
+@@ -197,7 +203,16 @@ func realtimeSetSubscriptions(e *core.RequestEvent) error {
  	// find subscription client
  	client, err := e.App.SubscriptionsBroker().ClientById(form.ClientId)
  	if err != nil {
@@ -51,4 +32,4 @@ index 72b830b..cc8f55f 100644
 +		}
  	}
 
- 	// for now allow only guest->auth upgrades and any other auth change is forbidden
+ 	// for just in case to prevent someone changing a guest subscription

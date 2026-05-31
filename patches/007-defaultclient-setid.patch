@@ -1,15 +1,3 @@
-From 348b12f5613b7cd90ea2704ed77f7adb1a49a124 Mon Sep 17 00:00:00 2001
-From: Johnny D <goforjohnny@icloud.com>
-Date: Sat, 30 May 2026 14:00:00 -0400
-Subject: [PATCH 7/7] feat: add SetId to subscriptions.DefaultClient
-
-Allows external connection managers (e.g. Durable Objects) to assign
-their own client IDs while reusing all of DefaultClient's subscription
-parsing, prefix matching, and context storage.
----
- tools/subscriptions/client.go | 11 +++++++++++
- 1 file changed, 11 insertions(+)
-
 diff --git a/tools/subscriptions/client.go b/tools/subscriptions/client.go
 index 06309d5..6e03cc8 100644
 --- a/tools/subscriptions/client.go
