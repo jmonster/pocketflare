@@ -1,4 +1,4 @@
-![Pocketflare hero](art/hero.png)
+![Pocketflare hero](art/hero-bordered.png)
 
 Pocketflare runs [PocketBase] on Cloudflare Workers and includes:
 
