@@ -269,8 +269,8 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 
 ## Current Limits
 
-- D1 cannot provide SQLite-equivalent multi-statement rollback through `database/sql`; each statement commits independently.
-- Batch API requests run through [PocketBase]'s upstream `/api/batch` handler, but they are not atomic on Pocketflare. If one operation in a batch fails, earlier writes in the same batch may already be committed to D1.
+- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. Some upstream PocketBase features (raw SQL route, OAuth2 flow, collection import) interleave reads and writes and may need targeted patches before they are fully compatible with D1 batch semantics.
+- Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker; direct browser-to-R2 upload and signed R2 download redirects are not implemented.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.

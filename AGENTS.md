@@ -132,12 +132,15 @@ After replaying patches and rebuilding generated assets, run the narrow proofs:
 
 ## D1 Transaction Constraint
 
-Cloudflare D1 does not provide multi-statement transactions across separate `database/sql` calls. `adapter/wasmdb/driver.go` wraps `Begin`/`BeginTx` with no-op transactions so PocketBase code can run, but each statement commits independently. Rollback cannot undo earlier statements in the callback.
+Cloudflare D1 supports atomic multi-statement transactions through `D1Database.batch()`, which executes prepared statements sequentially as a SQL transaction and rolls back the entire sequence on failure. `adapter/wasmdb/driver.go` maps `database/sql` transactions to D1 batch: writes are queued during the transaction callback and committed atomically at `Commit()`. Rollback drops the queue without any persistence.
 
-Consequences:
-- Normal single-statement CRUD is fine.
-- Migrations are statement-by-statement.
-- Batch/import/custom hooks that expect cross-statement rollback can leave partial writes.
+Constraints:
+- **Query-after-write fails.** After any queued write inside a transaction, subsequent `QueryContext` calls return a deterministic error. This prevents partial commits and makes unsupported interactive transaction shapes loud.
+- **Reads before writes are not isolated.** A `QueryContext` before any queued write executes directly against D1 but is not transactionally isolated with the later batch.
+- **Pending results are opaque.** `RowsAffected` and `LastInsertId` error until after commit; code that inspects these inside the transaction callback is incompatible with deferred batch commit.
+- Some upstream PocketBase paths interleave reads and writes inside `RunInTransaction` and need targeted patches (see `docs/D1-COMPATIBILITY.md` for the full matrix).
+- When a query-after-write is blocked, the driver emits a structured log line to stderr: `{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":N,"query":"..."}`. Use `wrangler tail` to identify which paths need patching.
+- For full upstream PocketBase compatibility without application rewrites, a SQLite-backed Durable Object storage mode is the long-term path. D1 remains the default for cost and availability.
 
 ## D1 Data Import (migrating from SQLite PocketBase)
 

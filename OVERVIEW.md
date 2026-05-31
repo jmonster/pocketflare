@@ -178,7 +178,8 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 
 ## Known Limits
 
-- D1 has no multi-statement transaction boundary for separate `database/sql` calls. Rollback is a no-op; partial writes can remain after multi-step failures.
+- **D1 transactions:** Pocketflare maps fixed write transactions to `D1Database.batch()`, which executes statements sequentially as a SQL transaction and rolls back the entire sequence on failure. Reads after queued writes fail deterministically before any partial persistence. Reads before writes are direct (non-isolated). See `docs/D1-COMPATIBILITY.md` for the full feature matrix.
+- A future SQLite-backed Durable Object storage mode (`DurableObjectSqliteStorage`) would provide real interactive SQLite transactions for closer upstream PocketBase compatibility. Tradeoff: the app database moves from D1 to a Durable Object with different latency, cost, and scaling characteristics. Not part of the current D1 batch implementation.
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are not implemented.
 - R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured. The Worker relay fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
