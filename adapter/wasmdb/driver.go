@@ -6,155 +6,526 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"sync"
+	"syscall/js"
 
-	d1driver "github.com/syumai/workers/cloudflare/d1"
+	"github.com/pocketflare/pocketflare/adapter/internal/jsutil"
 )
 
 func init() {
-	sql.Register("d1pocketflare", &txWrapperDriver{})
+	sql.Register("d1pocketflare", &d1Driver{})
 }
 
-// txWrapperDriver provides no-op transactions for D1's database/sql interface.
+// D1 batch transaction driver.
 //
-// WHY NOOP TRANSACTIONS ARE THE ONLY OPTION
+// D1Database.batch() executes prepared statements sequentially as a SQL
+// transaction and rolls back the entire sequence on failure. This driver
+// queues writes during the transaction callback and commits them atomically
+// via batch(). Rollback drops the queue without any persistence.
 //
-// D1 does not support multi-statement SQL transactions. There is no way to
-// BEGIN TRANSACTION, execute N statements, then COMMIT or ROLLBACK across
-// them with D1. This is a platform constraint, not a missing feature.
+// Reads before queued writes run directly against D1 and are NOT
+// transactionally isolated with the later batch. Reads after queued writes
+// fail before persistence rather than seeing stale state.
 //
-// What D1 actually provides:
-//   - Each db.prepare(sql).run() call is its own transaction at the storage
-//     layer. Every statement is individually atomic.
-//   - db.batch([]prepared) executes an array of prepared statements in a
-//     single HTTP round-trip, atomically. This IS a genuine multi-statement
-//     transaction, but it's a single-call primitive — you submit everything
-//     at once and get results back at once. The database/sql model requires
-//     interleaving reads and writes across separate method calls.
-//   - db.withSession() returns a D1DatabaseSession that provides sequential
-//     consistency (you read your writes within the session). It does NOT
-//     provide BEGIN/COMMIT/ROLLBACK boundaries across separate prepare().run()
-//     calls. The Session API is for read-replication consistency, not for
-//     user-managed multi-statement atomicity.
-//
-// Why batch() doesn't help here:
-//   - database/sql's transaction model is connection-oriented: you Begin(),
-//     execute statements one at a time (possibly reading intermediate results),
-//     then Commit() or Rollback(). This maps to SQLite's native transactional
-//     model but not to D1's batch-or-nothing model.
-//   - D1 batch() requires all statements upfront and returns all results at
-//     once. You cannot interleave application logic, read results, then issue
-//     more writes — which is what PocketBase's RunInTransaction callers do
-//     (e.g., save a record, run a callback that queries the saved data, then
-//     commit or roll back based on the result).
-//   - There is no adapter layer that can buffer and replay statements, because
-//     application logic and side effects (hooks, callbacks) run between them.
-//
-// Why withSession() doesn't help here:
-//   - D1DatabaseSession only exposes prepare() and batch(). Running "BEGIN
-//     TRANSACTION" through session.prepare().run() is not documented or
-//     guaranteed to create a transactional boundary — each .run() call still
-//     operates independently at the storage layer.
-//   - Even if BEGIN/COMMIT SQL were accepted on a session object, the
-//     database/sql model guarantees nothing about how the driver's internal
-//     connection handles them across separate Prepare() calls.
-//
-// DO NOT ATTEMPT TO "FIX" THIS
-//
-// If you are reading this and thinking "surely we can make transactions work
-// with D1 somehow," read the above sections again. The D1 platform has been
-// architected from the ground up as a stateless HTTP-accessible database.
-// Multi-statement transactions spanning independent driver.Prepare() calls
-// are fundamentally incompatible with that architecture. This has been
-// investigated thoroughly; there is no trick, workaround, or upcoming D1
-// feature that will bridge this gap.
-//
-// PRACTICAL IMPACT
-//
-// At the individual-statement level, D1 is fully atomic. Every INSERT,
-// UPDATE, DELETE, or SELECT executes atomically on its own. The only place
-// this limitation surfaces is in PocketBase code paths that use
-// RunInTransaction (or the underlying dbx.Transactional) to group multiple
-// statements:
-//
-//   - DrySubmit (deprecated in earlier PocketBase releases): used for pre-submit validation.
-//     The temp save will persist even on "rollback." This is acceptable
-//     because DrySubmit is only called opportunistically and the actual
-//     Submit() path does not depend on it — the real create/update call
-//     happens outside a transaction.
-//   - Collection import: multiple collection operations within a single
-//     RunInTransaction. If the import fails partway, some collections will
-//     have been created. Manual cleanup may be needed.
-//   - Batch API: multiple record operations in one request. Partial failures
-//     may leave some operations applied. The batch endpoint is typically
-//     used by admin clients; data integrity should be verified after failure.
-//   - Auto-migration: schema changes executed during app bootstrap. Each
-//     migration function runs inside RunInTransaction. If a migration step
-//     fails, earlier schema changes in that step persist. However, PocketBase's
-//     migration version tracker means failed migrations will be retried from
-//     scratch on next bootstrap, and most schema DDL is idempotent.
-//
-// These are the same tradeoffs you get with any D1-backed application. They
-// are not unique to Pocketflare — they are inherent to D1's design.
-type txWrapperDriver struct{}
+// Pending sql.Result values cannot report RowsAffected or LastInsertId
+// until after commit.
 
-func (d *txWrapperDriver) Open(name string) (driver.Conn, error) {
-	connector, err := d1driver.OpenConnector(name)
-	if err != nil {
-		return nil, err
+// ── driver.Driver ──
+
+type d1Driver struct{}
+
+func (d *d1Driver) Open(name string) (driver.Conn, error) {
+	env := js.Global().Get("context").Get("env")
+	v := env.Get(name)
+	if v.IsUndefined() {
+		return nil, errors.New("d1pocketflare: D1 binding not found: " + name)
 	}
-	conn, err := connector.Connect(context.Background())
-	if err != nil {
-		return nil, err
-	}
-	return &txWrapperConn{conn: conn}, nil
+	return &d1Conn{dbObj: v}, nil
 }
 
-// txWrapperConn wraps a D1 connection and provides no-op transactions.
-//
-// All non-transaction operations (Prepare, Close) delegate directly to the
-// underlying d1.Conn. Begin and BeginTx return a noopTx — the transaction
-// itself is a no-op because D1 cannot support multi-statement transactions
-// across separate database/sql calls (see txWrapperDriver for the full
-// explanation).
-type txWrapperConn struct {
-	conn driver.Conn
+// ── driver.Conn / driver.ConnBeginTx / driver.ConnPrepareContext ──
+
+type d1Conn struct {
+	dbObj js.Value
+	mu    sync.Mutex
+	tx    *d1Tx
 }
 
-func (c *txWrapperConn) Prepare(query string) (driver.Stmt, error) {
-	return c.conn.Prepare(query)
+func (c *d1Conn) Prepare(query string) (driver.Stmt, error) {
+	return c.PrepareContext(context.Background(), query)
 }
 
-func (c *txWrapperConn) Close() error {
-	return c.conn.Close()
+func (c *d1Conn) PrepareContext(_ context.Context, query string) (driver.Stmt, error) {
+	return &d1Stmt{conn: c, query: query}, nil
 }
 
-func (c *txWrapperConn) Begin() (driver.Tx, error) {
-	return &noopTx{}, nil
+func (c *d1Conn) Close() error {
+	return nil
 }
 
-func (c *txWrapperConn) BeginTx(_ context.Context, _ driver.TxOptions) (driver.Tx, error) {
-	return &noopTx{}, nil
+func (c *d1Conn) Begin() (driver.Tx, error) {
+	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
-
-// noopTx implements driver.Tx where Commit and Rollback are both no-ops.
-//
-// D1 does not support multi-statement transactions across separate
-// driver.Prepare() calls (documented in txWrapperDriver above). Every
-// "transaction" created by database/sql through this driver commits each
-// statement immediately — there is no pending state to commit or roll back.
-//
-// PocketBase callers that use RunInTransaction (DrySubmit, collection import,
-// batch API, auto-migration) will see every write take effect immediately.
-// On "rollback", earlier writes are not undone. This is a documented D1
-// platform constraint, not a driver bug.
-type noopTx struct{}
-
-func (tx *noopTx) Commit() error   { return nil }
-func (tx *noopTx) Rollback() error { return nil }
 
 var (
-	_ driver.Driver      = (*txWrapperDriver)(nil)
-	_ driver.Conn        = (*txWrapperConn)(nil)
-	_ driver.ConnBeginTx = (*txWrapperConn)(nil)
-	_ driver.Tx          = (*noopTx)(nil)
+	errReadOnlyTx  = errors.New("d1pocketflare: read-only transactions are not supported")
+	errIsolationTx = errors.New("d1pocketflare: non-default isolation level is not supported")
+	errNestedTx    = errors.New("d1pocketflare: transaction already in progress on this connection")
+)
+
+func (c *d1Conn) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if opts.ReadOnly {
+		return nil, errReadOnlyTx
+	}
+	if opts.Isolation != driver.IsolationLevel(0) {
+		return nil, errIsolationTx
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.tx != nil {
+		return nil, errNestedTx
+	}
+
+	tx := &d1Tx{conn: c}
+	c.tx = tx
+	return tx, nil
+}
+
+// ── driver.Stmt / driver.StmtExecContext / driver.StmtQueryContext ──
+
+type d1Stmt struct {
+	conn  *d1Conn
+	query string
+}
+
+func (s *d1Stmt) NumInput() int { return -1 }
+
+func (s *d1Stmt) Close() error { return nil }
+
+func (s *d1Stmt) Exec([]driver.Value) (driver.Result, error) {
+	return nil, errors.New("d1pocketflare: Exec is deprecated; use ExecContext")
+}
+
+func (s *d1Stmt) Query([]driver.Value) (driver.Rows, error) {
+	return nil, errors.New("d1pocketflare: Query is deprecated; use QueryContext")
+}
+
+// ExecContext either queues the statement (if in a tx) or executes directly.
+func (s *d1Stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	s.conn.mu.Lock()
+	tx := s.conn.tx
+	s.conn.mu.Unlock()
+
+	if tx == nil {
+		return s.execDirect(ctx, args)
+	}
+
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
+	if tx.done {
+		return nil, errors.New("d1pocketflare: transaction already completed")
+	}
+
+	// Deep-copy args so we don't hold caller-owned slices.
+	copied := copyNamedValues(args)
+
+	r := &pendingResult{}
+	tx.statements = append(tx.statements, queuedStatement{query: s.query, args: copied})
+	tx.results = append(tx.results, r)
+
+	return r, nil
+}
+
+// QueryContext reads directly against D1 before queued writes. Once writes
+// are queued, reads fail instead of observing stale committed state.
+func (s *d1Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	s.conn.mu.Lock()
+	tx := s.conn.tx
+	s.conn.mu.Unlock()
+
+	if tx != nil {
+		tx.mu.Lock()
+		done := tx.done
+		queuedWrites := len(tx.statements)
+		tx.mu.Unlock()
+		if done {
+			return nil, errors.New("d1pocketflare: transaction already completed")
+		}
+		if queuedWrites > 0 {
+			fmt.Fprintf(os.Stderr,
+				`{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":%d,"query":%q}`+"\n",
+				queuedWrites, truncateForLog(s.query))
+			return nil, errors.New("d1pocketflare: cannot query after queued writes in a D1 batch transaction")
+		}
+	}
+
+	return s.queryDirect(ctx, args)
+}
+
+// execDirect runs a single statement against D1 non-transactionally.
+func (s *d1Stmt) execDirect(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	jsArgs, err := namedValuesToJS(args)
+	if err != nil {
+		return nil, err
+	}
+	resultPromise := s.conn.dbObj.Call("prepare", s.query).Call("bind", jsArgs...).Call("run")
+	resultObj, err := jsutil.AwaitPromise(ctx, resultPromise)
+	if err != nil {
+		return nil, err
+	}
+	m := readResultMeta(resultObj)
+	return &directResult{meta: m}, nil
+}
+
+// queryDirect runs a single query against D1 non-transactionally.
+func (s *d1Stmt) queryDirect(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	jsArgs, err := namedValuesToJS(args)
+	if err != nil {
+		return nil, err
+	}
+	resultPromise := s.conn.dbObj.Call("prepare", s.query).Call("bind", jsArgs...).Call("raw", map[string]any{"columnNames": true})
+	rowsArray, err := jsutil.AwaitPromise(ctx, resultPromise)
+	if err != nil {
+		return nil, err
+	}
+
+	if rowsArray.Length() == 0 {
+		return &d1Rows{rowsArray: rowsArray}, nil
+	}
+
+	colsArray := rowsArray.Call("shift")
+	colsLen := colsArray.Length()
+	cols := make([]string, colsLen)
+	for i := 0; i < colsLen; i++ {
+		cols[i] = colsArray.Index(i).String()
+	}
+	return &d1Rows{_columns: cols, rowsArray: rowsArray}, nil
+}
+
+// ── driver.Tx ──
+
+type d1Tx struct {
+	mu         sync.Mutex
+	conn       *d1Conn
+	statements []queuedStatement
+	results    []*pendingResult
+	done       bool
+}
+
+type queuedStatement struct {
+	query string
+	args  []driver.NamedValue
+}
+
+var errRolledBack = errors.New("d1pocketflare: transaction rolled back")
+
+// Commit sends all queued statements to D1Database.batch().
+func (tx *d1Tx) Commit() error {
+	tx.mu.Lock()
+	if tx.done {
+		tx.mu.Unlock()
+		return errors.New("d1pocketflare: transaction already completed")
+	}
+	tx.done = true
+
+	if len(tx.statements) == 0 {
+		tx.mu.Unlock()
+		tx.clearConnTx()
+		return nil
+	}
+
+	stmts := tx.statements
+	results := tx.results
+	dbObj := tx.conn.dbObj
+	tx.mu.Unlock()
+
+	// Build JS array of prepared statements.
+	arr := js.Global().Get("Array").New(len(stmts))
+	for i, q := range stmts {
+		jsArgs, err := namedValuesToJS(q.args)
+		if err != nil {
+			tx.failResults(results, err)
+			tx.clearConnTx()
+			return err
+		}
+		stmt := dbObj.Call("prepare", q.query).Call("bind", jsArgs...)
+		arr.SetIndex(i, stmt)
+	}
+
+	batchPromise := dbObj.Call("batch", arr)
+	batchResults, err := jsutil.AwaitPromise(context.Background(), batchPromise)
+	if err != nil {
+		tx.failResults(results, err)
+		tx.clearConnTx()
+		return err
+	}
+
+	// Hydrate each pending result from batch results.
+	for i, r := range results {
+		meta := readResultMeta(batchResults.Index(i))
+		r.mu.Lock()
+		r.meta = &meta
+		r.mu.Unlock()
+	}
+
+	tx.clearConnTx()
+	return nil
+}
+
+func (tx *d1Tx) Rollback() error {
+	tx.mu.Lock()
+	if tx.done {
+		tx.mu.Unlock()
+		return errors.New("d1pocketflare: transaction already completed")
+	}
+	tx.done = true
+
+	for _, r := range tx.results {
+		r.mu.Lock()
+		r.err = errRolledBack
+		r.mu.Unlock()
+	}
+
+	tx.statements = nil
+	tx.results = nil
+	tx.mu.Unlock()
+
+	tx.clearConnTx()
+	return nil
+}
+
+func (tx *d1Tx) failResults(results []*pendingResult, err error) {
+	for _, r := range results {
+		r.mu.Lock()
+		r.err = err
+		r.mu.Unlock()
+	}
+}
+
+func (tx *d1Tx) clearConnTx() {
+	tx.conn.mu.Lock()
+	tx.conn.tx = nil
+	tx.conn.mu.Unlock()
+}
+
+// ── driver.Result (pending + direct) ──
+
+type pendingResult struct {
+	mu   sync.Mutex
+	meta *resultMeta
+	err  error
+}
+
+func (r *pendingResult) RowsAffected() (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return 0, r.err
+	}
+	if r.meta == nil {
+		return 0, errors.New("d1pocketflare: result pending commit")
+	}
+	if !r.meta.hasChanges {
+		return 0, errors.New("d1pocketflare: D1 result missing meta.changes")
+	}
+	return r.meta.changes, nil
+}
+
+func (r *pendingResult) LastInsertId() (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return 0, r.err
+	}
+	if r.meta == nil {
+		return 0, errors.New("d1pocketflare: result pending commit")
+	}
+	if !r.meta.hasLastRowID {
+		return 0, errors.New("d1pocketflare: D1 result missing meta.last_row_id")
+	}
+	return r.meta.lastRowID, nil
+}
+
+// directResult is returned by non-transactional ExecContext.
+type directResult struct {
+	meta resultMeta
+}
+
+func (r *directResult) RowsAffected() (int64, error) {
+	if !r.meta.hasChanges {
+		return 0, errors.New("d1pocketflare: D1 result missing meta.changes")
+	}
+	return r.meta.changes, nil
+}
+
+func (r *directResult) LastInsertId() (int64, error) {
+	if !r.meta.hasLastRowID {
+		return 0, errors.New("d1pocketflare: D1 result missing meta.last_row_id")
+	}
+	return r.meta.lastRowID, nil
+}
+
+// ── resultMeta ──
+
+type resultMeta struct {
+	changes       int64
+	lastRowID     int64
+	hasChanges    bool
+	hasLastRowID  bool
+}
+
+func readResultMeta(obj js.Value) resultMeta {
+	var m resultMeta
+	meta := obj.Get("meta")
+	if c := meta.Get("changes"); !c.IsNull() && !c.IsUndefined() {
+		m.changes = int64(c.Int())
+		m.hasChanges = true
+	}
+	if l := meta.Get("last_row_id"); !l.IsNull() && !l.IsUndefined() {
+		m.lastRowID = int64(l.Int())
+		m.hasLastRowID = true
+	}
+	return m
+}
+
+// ── driver.Rows ──
+
+type d1Rows struct {
+	rowsArray  js.Value
+	currentRow int
+	_columns   []string
+	mu         sync.Mutex
+}
+
+func (r *d1Rows) Columns() []string { return r._columns }
+
+func (r *d1Rows) Close() error { return nil }
+
+func (r *d1Rows) Next(dest []driver.Value) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.currentRow >= r.rowsArray.Length() {
+		return io.EOF
+	}
+
+	rowArray := r.rowsArray.Index(r.currentRow)
+	rowLen := rowArray.Length()
+	for i := 0; i < rowLen; i++ {
+		v, err := jsValueToGo(rowArray.Index(i))
+		if err != nil {
+			return err
+		}
+		dest[i] = v
+	}
+	r.currentRow++
+	return nil
+}
+
+// ── Value conversion ──
+
+func namedValuesToJS(args []driver.NamedValue) ([]any, error) {
+	out := make([]any, len(args))
+	for i, arg := range args {
+		v, err := goValueToJS(arg.Value)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func goValueToJS(v any) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if b, ok := v.([]byte); ok {
+		dst := js.Global().Get("Uint8Array").New(len(b))
+		if n := js.CopyBytesToJS(dst, b); n != len(b) {
+			return nil, errors.New("d1pocketflare: incomplete copy to Uint8Array")
+		}
+		return dst, nil
+	}
+	return v, nil
+}
+
+func jsValueToGo(v js.Value) (driver.Value, error) {
+	switch v.Type() {
+	case js.TypeNull:
+		return nil, nil
+	case js.TypeNumber:
+		f := v.Float()
+		if isIntegral(f) {
+			return int64(f), nil
+		}
+		return f, nil
+	case js.TypeString:
+		return v.String(), nil
+	case js.TypeObject:
+		// ArrayBuffer / blob
+		src := js.Global().Get("Uint8Array").New(v)
+		dst := make([]byte, src.Length())
+		if n := js.CopyBytesToGo(dst, src); n != len(dst) {
+			return nil, errors.New("d1pocketflare: incomplete copy from Uint8Array")
+		}
+		return dst, nil
+	default:
+		return nil, errors.New("d1pocketflare: unexpected JS value type in row")
+	}
+}
+
+func isIntegral(f float64) bool {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return false
+	}
+	return f == math.Trunc(f)
+}
+
+// truncateForLog returns a compact representation of a SQL query for diagnostics.
+func truncateForLog(query string) string {
+	if len(query) > 80 {
+		return query[:77] + "..."
+	}
+	return query
+}
+
+func copyNamedValues(args []driver.NamedValue) []driver.NamedValue {
+	out := make([]driver.NamedValue, len(args))
+	for i, a := range args {
+		out[i].Name = a.Name
+		out[i].Ordinal = a.Ordinal
+		if b, ok := a.Value.([]byte); ok {
+			c := make([]byte, len(b))
+			copy(c, b)
+			out[i].Value = c
+		} else {
+			out[i].Value = a.Value
+		}
+	}
+	return out
+}
+
+// ── Interface assertions ──
+
+var (
+	_ driver.Driver             = (*d1Driver)(nil)
+	_ driver.Conn               = (*d1Conn)(nil)
+	_ driver.ConnBeginTx        = (*d1Conn)(nil)
+	_ driver.ConnPrepareContext = (*d1Conn)(nil)
+	_ driver.Stmt               = (*d1Stmt)(nil)
+	_ driver.StmtExecContext    = (*d1Stmt)(nil)
+	_ driver.StmtQueryContext   = (*d1Stmt)(nil)
+	_ driver.Tx                 = (*d1Tx)(nil)
+	_ driver.Result             = (*pendingResult)(nil)
+	_ driver.Result             = (*directResult)(nil)
+	_ driver.Rows               = (*d1Rows)(nil)
 )
