@@ -8,7 +8,7 @@ Pocketflare runs [PocketBase] on Cloudflare Workers and includes:
 - the familiar [PocketBase] Admin dashboard UI, served through Workers Assets
 - the simple REST-ish [PocketBase] API, running as Go WASM on Cloudflare Workers
 
-Pocketflare is intentionally a thin port. The goal is not to fork [PocketBase] into a new product; it is to make [PocketBase] work well on Cloudflare while keeping future upstream updates easy to pull. It also keeps your backend portable; you can port back to Pocketbase anytime.
+Pocketflare is a thin [PocketBase] port for Cloudflare, structured to keep upstream updates easy to pull.
 
 ## Quick Start
 
@@ -28,11 +28,9 @@ pnpm install
 make deploy
 ```
 
-`make deploy` builds first, then runs `pnpm exec wrangler deploy`.
-
 ## Local Development
 
-Use Wrangler's local dev server for normal iteration. Wrangler runs the Worker in its local Miniflare-backed runtime and stores local D1/R2 state under `.wrangler/`.
+Wrangler local dev runs the Worker in Miniflare and stores local D1/R2 state under `.wrangler/`.
 
 From a fresh checkout:
 
@@ -60,7 +58,7 @@ make build
 pnpm exec wrangler dev --remote
 ```
 
-Local dev is useful for app behavior and UI checks, but it is not proof of deployed Worker memory behavior. Use a deployed Worker for cold-start, concurrent-browser-request, and edge-runtime validation.
+Use a deployed Worker for cold-start, concurrent-browser-request, and edge-runtime validation.
 
 To check whether the pinned [PocketBase] version is current:
 
@@ -72,14 +70,12 @@ pnpm run check:pb-version
 
 For a fresh database, deploy and open `/_pf`. Pocketflare redirects to [PocketBase]'s tokenized first-access installer, where you create the first superuser. After setup, use `/_/` for the normal [PocketBase] admin UI.
 
-Headless bootstrap is still supported by setting `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD` in the Worker environment, but it is not the normal path. Remove those values after the first successful boot.
+For headless bootstrap, set `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD` in the Worker environment. Remove those values after the first successful boot.
 
 New databases also default:
 
 - app URL from `POCKETFLARE_APP_URL`
 - trusted proxy header `CF-Connecting-IP`
-
-Existing or migrated [PocketBase] settings are preserved.
 
 ## Runtime Shape
 
@@ -115,7 +111,7 @@ directory = "./admin-ui"
 binding = "ASSETS"
 ```
 
-`ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` so browser fan-out for admin static files does not boot the Go WASM runtime. Pocketflare's `/_pf` route is the one-time first-superuser setup entry point; `/_` and nested admin assets stay on Workers Assets.
+`ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` without booting Go WASM. `/_pf` is the first-superuser setup route; `/_` and nested admin assets stay on Workers Assets.
 
 ## File Storage
 
@@ -129,22 +125,22 @@ Terminology:
 - Download means [PocketBase] serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
 - Copy means [PocketBase]'s filesystem `Copy(src, dst)` method duplicated an existing object. Normal uploads, downloads, and migration imports do not use S3 `CopyObject`.
 
-When optional R2 API credentials are configured, Copy can use server-side S3 `CopyObject` so object bytes do not pass through the Worker. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. Treat the fallback as needing runtime proof before relying on it for large objects.
+With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. Large-copy fallback still needs runtime proof.
 
 ## Backups
 
 Use Cloudflare D1 Time Travel or D1 export for database backups, not [PocketBase]'s upstream backup system.
 
-[PocketBase] backups archive the local `pb_data` directory. In Pocketflare, the application database lives in the `APP_DB` D1 binding, logs live in the `LOGS_DB` D1 binding, and uploaded files live in the `STORAGE` R2 binding. Those resources are outside the ephemeral Worker data directory, so an upstream [PocketBase] backup zip is not a complete application backup.
+[PocketBase] backups archive the local `pb_data` directory. Pocketflare app data lives in D1 and uploaded files live in R2. Upstream [PocketBase] backup zips are not complete Pocketflare application backups.
 
-If [PocketBase] backup creation or auto backups are enabled, the resulting zip is stored through the `BACKUPS` R2 binding, but it should not be treated as restorable production data on Pocketflare. Backup restore is unsupported on Workers today.
+If [PocketBase] backup creation or auto backups are enabled, the zip is stored through `BACKUPS`. Backup restore is unsupported on Workers.
 
 For production:
 
 - Use D1 Time Travel for point-in-time database restore.
 - Export D1 to durable storage when you need backup retention beyond D1 Time Travel's window.
 - Back up or copy the `STORAGE` R2 bucket separately for uploaded files.
-- Leave [PocketBase] backup S3 settings disabled; they are not the source of truth for Pocketflare backups.
+- Leave [PocketBase] backup S3 settings disabled.
 
 ## Email
 
@@ -212,8 +208,6 @@ For existing S3-backed [PocketBase] apps, copy the existing `storage/` prefix fr
 make deploy
 ```
 
-The data export includes `_params/settings`, so migrated app URL and trusted proxy settings are not replaced by Pocketflare defaults.
-
 ## Performance Timing
 
 Pocketflare exposes app-level timing headers on dynamic responses:
@@ -243,7 +237,7 @@ warm dynamic p95: 74.78ms client
 
 Prices below are estimates from Cloudflare public pricing checked 2026-05-30. Check Cloudflare pricing before making commitments.
 
-Pocketflare currently needs Workers Paid because the deployed bundle is about 8.9 MiB gzip, above the Workers Free 3 MiB gzip limit. The baseline platform cost is therefore the Workers Paid minimum: **$5/month**.
+Pocketflare currently needs Workers Paid: the deployed bundle is about 8.9 MiB gzip, above the Workers Free 3 MiB gzip limit. Baseline platform cost is **$5/month**.
 
 Included in that baseline:
 
@@ -280,19 +274,19 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 - Uploads and downloads still pass through the Worker; direct browser-to-R2 upload and signed R2 download redirects are not implemented.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
-- [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. It is useful as best-effort app protection, but use Cloudflare WAF/rate limiting for edge-wide abuse protection. A Durable Object-backed limiter would be needed for globally exact [PocketBase] rate-limit semantics.
+- [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection. A Durable Object-backed limiter would be needed for globally exact [PocketBase] rate-limit semantics.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker.
 - HTTP mail providers and webhook delivery are the production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
-- [PocketBase] backups are not complete data backups on Pocketflare because D1 and R2 data live outside `pb_data`. Use D1 Time Travel/export plus a separate R2 file backup plan.
+- [PocketBase] backups are not complete Pocketflare backups. Use D1 Time Travel/export plus a separate R2 file backup plan.
 
 ## Cloudflare Limits
 
 Current Worker limits that shape Pocketflare:
 
-- Memory is 128 MB per isolate, including JavaScript heap and WASM allocations. A single isolate can handle many concurrent requests, so admin static assets must stay on Workers Assets and not boot Go WASM.
+- Memory is 128 MB per isolate, including JavaScript heap and WASM allocations. Admin static assets must stay on Workers Assets and not boot Go WASM.
 - Worker size is 3 MB gzip on Free and 10 MB gzip on Paid, with a 64 MB uncompressed limit.
 - Startup time is 1 second for global-scope parse and execution.
-- Request body size is a Cloudflare account-plan limit, not a Workers-plan limit: 100 MB on Free/Pro, 200 MB on Business, and 500 MB by default on Enterprise. Standard [PocketBase] uploads still pass through the Worker, so this applies until direct R2 upload exists.
+- Request body size is a Cloudflare account-plan limit, not a Workers-plan limit: 100 MB on Free/Pro, 200 MB on Business, and 500 MB by default on Enterprise. Standard [PocketBase] uploads still pass through the Worker until direct R2 upload exists.
 - Static Asset files can be up to 25 MiB each.
 
 ## References

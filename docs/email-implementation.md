@@ -51,7 +51,7 @@ POCKETFLARE_MAIL_DOMAIN = "mg.example.com"
 
 ## Webhook
 
-The webhook path is useful when mail delivery should stay behind a separate service.
+Use the webhook path when mail delivery stays behind a separate service.
 
 ```sh
 pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_URL
@@ -96,7 +96,7 @@ Expected constraints:
 - Port 25 is blocked by Cloudflare Workers and should fail with a clear configuration error.
 - SMTP settings are read from PocketBase admin settings at send time when no HTTP provider or webhook is configured.
 
-Current caution: the SMTP code compiles, but it needs live-provider proof before being documented as production-ready. STARTTLS on port 587 is especially suspect until the transport is verified to upgrade the `cloudflare:sockets` connection correctly.
+SMTP requires live-provider proof before production use, especially STARTTLS on port 587.
 
 ## Validation Needed
 

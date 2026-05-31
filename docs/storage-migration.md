@@ -19,7 +19,7 @@ mkdir -p .artifacts
 pnpm exec wrangler d1 execute APP_DB --remote --file .artifacts/pocketbase-to-d1.sql
 ```
 
-The export keeps `_params/settings`. Existing app URL, auth, mail, trusted proxy, and S3 settings are preserved in D1, but Pocketflare ignores the upstream S3 file-storage setting for normal file fields.
+Pocketflare ignores the upstream S3 file-storage setting for normal file fields.
 
 ## Local PocketBase Storage
 
@@ -84,13 +84,13 @@ Runtime terms:
 - Download: PocketBase serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
 - Copy: PocketBase's filesystem `Copy(src, dst)` method duplicates an existing stored object. Normal upload, download, local migration, and S3-to-R2 import do not call this path.
 
-S3 `CopyObject` is only an optimization for runtime filesystem Copy. When optional R2 API credentials are configured, Pocketflare can ask R2 to copy the object server-side so bytes do not pass through the Worker. Without those credentials, the intended fallback relays the source object body to a new R2 object through the Worker. That fallback needs runtime proof before relying on it for large objects.
+S3 `CopyObject` is only an optimization for runtime filesystem Copy. With optional R2 API credentials, Pocketflare asks R2 to copy the object server-side. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker. Large-copy fallback still needs runtime proof.
 
 ## Backups
 
 Pocketflare has a separate R2 `BACKUPS` bucket. Existing PocketBase backup archives are optional migration data. If you need them, copy backup zip files into the `BACKUPS` bucket with their original file names.
 
-Backup create/list/upload use R2. Backup restore still needs follow-up work because one upstream restore branch consults PocketBase backup S3 settings.
+Backup create/list/upload use R2. Backup restore is unsupported while the upstream restore path still checks PocketBase backup S3 settings.
 
 ## Verification
 

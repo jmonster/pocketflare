@@ -26,9 +26,9 @@ Browser
                            └─ adapter/realtime.go (DO bridge)
 ```
 
-`worker.mjs` keeps one Go runtime per isolate. This is intentional: browser admin pages load many files in parallel, and creating one Go WASM runtime per request can exceed the Worker memory limit.
+`worker.mjs` keeps one Go runtime per isolate. Creating one Go WASM runtime per request can exceed the Worker memory limit.
 
-Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, not by PocketBase. `/_pf` is Pocketflare's first-run setup route; it boots the runtime only to redirect empty databases to the tokenized first-superuser installer. `/_` and nested admin static assets remain asset-first so browser fan-out does not boot the Go runtime.
+Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, not by PocketBase. `/_pf` is Pocketflare's first-run setup route; it boots the runtime only to redirect empty databases to the tokenized first-superuser installer. `/_` and nested admin static assets remain asset-first.
 
 ## Project Layout
 
@@ -91,9 +91,9 @@ The script prompts for:
 - R2 bucket names
 - whether to run Wrangler create commands
 
-The generated `wrangler.toml` sets `POCKETFLARE_APP_URL` to the chosen Worker URL. On a fresh database, Pocketflare saves that as PocketBase's app URL. It also trusts `CF-Connecting-IP` by default. Existing settings rows are not overwritten.
+The generated `wrangler.toml` sets `POCKETFLARE_APP_URL` to the chosen Worker URL. Fresh databases use that as the PocketBase app URL and trust `CF-Connecting-IP`.
 
-Admin setup uses Pocketflare's `/_pf` route. When no real superuser exists, it redirects to PocketBase's `/_/#/pbinstal/<token>` first-access installer. After setup, use `/_/` for the admin UI. Headless bootstrap is available through `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD`, but it should be treated as an escape hatch and removed after the first successful boot.
+Admin setup uses Pocketflare's `/_pf` route. When no real superuser exists, it redirects to PocketBase's `/_/#/pbinstal/<token>` first-access installer. After setup, use `/_/` for the admin UI. For headless bootstrap, set `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD`, then remove them after the first successful boot.
 
 ## Email
 
@@ -103,7 +103,7 @@ Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. 
 2. `POCKETFLARE_MAIL_WEBHOOK_URL`: legacy generic webhook mode.
 3. PocketBase admin SMTP settings, delivered through the Workers sockets SMTP transport.
 
-HTTP providers and the webhook are the recommended production paths. SMTP over Workers sockets is implemented but still needs provider-level proof, especially STARTTLS on port 587. Workers block outbound port 25.
+HTTP providers and webhook delivery are the production paths. SMTP over Workers sockets requires provider-level proof, especially STARTTLS on port 587. Workers block outbound port 25.
 
 The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md`.
 
@@ -115,7 +115,7 @@ The standard PocketBase file API still proxies uploads and downloads through Poc
 
 Uploads use a chunked R2 multipart writer: PocketBase receives the file through the API, the adapter buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
 
-Copies are separate from uploads. They happen only when PocketBase's filesystem `Copy(src, dst)` method duplicates an existing object. With optional R2 API credentials, that operation can use server-side S3 `CopyObject`. Without those credentials, the intended fallback relays the source object body to a new R2 object through the Worker. That fallback needs runtime proof before large-copy claims.
+Copies are separate from uploads. They happen only when PocketBase's filesystem `Copy(src, dst)` method duplicates an existing object. With optional R2 API credentials, that operation uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker. Large-copy fallback still needs runtime proof.
 
 ## Migrating Existing PocketBase Projects
 
@@ -156,7 +156,7 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
    pnpm exec wrangler d1 execute APP_DB --remote --file .artifacts/pocketbase-to-d1.sql
    ```
 
-   The export keeps `_params/settings`, so migrated app URL, mail, auth, and trusted-proxy settings are preserved. `_migrations` is excluded; `_logs` is excluded unless `--include-logs` is passed.
+   Logs are excluded unless `--include-logs` is passed.
 
 5. Upload files:
 
@@ -183,8 +183,8 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 - R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured. The Worker relay fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
-- HTTP mail providers and webhook email are the recommended production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
-- PocketBase backups are not complete data backups on Pocketflare because D1 and R2 data live outside `pb_data`. Use D1 Time Travel/export plus a separate R2 file backup plan.
+- HTTP mail providers and webhook email are the production paths. SMTP sockets require provider-level proof, especially STARTTLS on port 587.
+- PocketBase backups are not complete Pocketflare backups. Use D1 Time Travel/export plus a separate R2 file backup plan.
 
 ## References
 
