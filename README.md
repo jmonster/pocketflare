@@ -10,6 +10,14 @@ Pocketflare runs [PocketBase] on Cloudflare Workers and includes:
 
 Pocketflare is a thin [PocketBase] port for Cloudflare, structured to keep upstream updates easy to pull.
 
+## Compatibility Model
+
+Pocketflare preserves the [PocketBase] API and runtime shape where Cloudflare provides equivalent primitives. PocketBase file fields work through Pocketflare's R2-backed filesystem adapter. Custom Go code that uses PocketBase's file APIs should continue to use those APIs and will store files in R2.
+
+Pocketflare does not turn arbitrary local filesystem, fsnotify, subprocess, or raw socket code into Worker-compatible code. Apps that read and write files directly with `os.*` should move those paths to PocketBase file APIs, R2 bindings, or another Worker-compatible service.
+
+D1 is the default database backend because it is cheap, highly available, and operationally simple. An optional Durable Object SQLite mode is planned for apps that need closer upstream SQLite transaction semantics.
+
 ## Quick Start
 
 Scaffold a new Pocketflare project:
@@ -116,6 +124,8 @@ binding = "ASSETS"
 ## File Storage
 
 In the Workers build, Pocketflare injects an R2 filesystem adapter and ignores the upstream local/S3 filesystem path for file storage.
+
+This adapter covers PocketBase-managed file fields and PocketBase filesystem calls. It does not provide a general writable POSIX filesystem for custom Go code.
 
 Standard [PocketBase] file uploads and downloads are still mediated by the [PocketBase] API. Direct browser-to-R2 uploads and signed R2 download redirects are possible future Pocketflare features, not effects of enabling [PocketBase] S3.
 

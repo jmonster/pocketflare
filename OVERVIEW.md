@@ -2,6 +2,8 @@
 
 Pocketflare runs PocketBase on Cloudflare Workers by compiling PocketBase to Go WASM, adapting SQLite access to D1, and adapting file storage to R2.
 
+The file-storage adapter covers PocketBase-managed file fields and PocketBase filesystem calls. It is not a general POSIX filesystem for custom Go code; direct `os.*`, fsnotify, subprocess, and raw socket assumptions still need Worker-compatible replacements.
+
 ## Runtime
 
 ```
@@ -109,7 +111,7 @@ The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`,
 
 ## File Storage Behavior
 
-Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selection for normal file fields. The adapter injects an R2-backed filesystem directly.
+Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selection for normal file fields. The adapter injects an R2-backed filesystem directly. This covers PocketBase-managed file fields and PocketBase filesystem calls, not arbitrary local `os.*` filesystem use in custom Go code.
 
 The standard PocketBase file API still proxies uploads and downloads through PocketBase. Upstream S3 mode does not make normal file-field uploads direct-to-S3. Direct browser-to-R2 uploads, signed R2 download redirects, or a public R2 custom domain would require explicit Pocketflare routes that preserve PocketBase access rules.
 

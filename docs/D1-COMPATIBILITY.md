@@ -81,10 +81,12 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 
 For upstream SQLite semantics without rewriting apps, an optional SQLite-backed Durable Object storage mode (`DurableObjectSqliteStorage`) is the full-compatibility option:
 
-- Provides real interactive SQLite transactions (read-your-writes, nested tx, savepoints)
+- Provides callback-scoped SQLite transactions with read-your-writes semantics
 - Enables all upstream PocketBase features without patches
 - Tradeoff: app database moves from D1 to a Durable Object with different latency, cost, storage limit, and scaling characteristics
 - D1 remains the default (cheap, high-availability, HTTP-accessible)
 - DO SQLite would be a configuration mode, not a replacement
 
 This is not part of the current D1 batch implementation.
+
+Implementation plan: `docs/do-sqlite-mode-plan.md`.

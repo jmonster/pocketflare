@@ -67,6 +67,8 @@ Normal new-project admin setup should use Pocketflare's `/_pf` route, which redi
 
 `STORAGE` and `BACKUPS` are live R2 bindings. The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
 
+That adapter covers PocketBase-managed file fields and PocketBase filesystem calls. It is not a general writable POSIX filesystem for custom Go code. Direct `os.*`, fsnotify, subprocess, and raw socket assumptions need Worker-compatible replacements.
+
 PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but it should not be treated as restorable production data. Use D1 Time Travel/export for database backup and copy/snapshot the `STORAGE` R2 bucket separately for uploaded files. Backup restore is unsupported on Workers.
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
@@ -141,6 +143,7 @@ Constraints:
 - Some upstream PocketBase paths interleave reads and writes inside `RunInTransaction` and need targeted patches (see `docs/D1-COMPATIBILITY.md` for the full matrix).
 - When a query-after-write is blocked, the driver emits a structured log line to stderr: `{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":N,"query":"..."}`. Use `wrangler tail` to identify which paths need patching.
 - For full upstream PocketBase compatibility without application rewrites, add an optional SQLite-backed Durable Object storage mode. D1 remains the default for cost and availability.
+- See `docs/do-sqlite-mode-plan.md` for the opt-in full-compatibility storage plan.
 
 ## D1 Data Import (migrating from SQLite PocketBase)
 
