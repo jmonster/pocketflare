@@ -95,10 +95,10 @@ make dev
 Then open:
 
 ```text
-http://localhost:8787/_/
+http://localhost:8787/_pf
 ```
 
-If the local database has no superuser, Pocketflare redirects `/_/` to PocketBase's tokenized first-access installer. Create a local superuser there. Local D1/R2 data is separate from Cloudflare remote resources.
+`/_pf` is Pocketflare's first-run setup route. If the local database has no superuser, it redirects to PocketBase's tokenized first-access installer. After creating the superuser, use `http://localhost:8787/_/` for the admin UI. Local D1/R2 data is separate from Cloudflare remote resources.
 
 After changing Go, `worker.mjs`, `runtime.mjs`, `realtime-do.mjs`, or `smtp-transport.mjs`, stop Wrangler, run `make build`, then run `make dev` again. Admin UI changes require rebuilding `admin-ui/_` before `make build`.
 
@@ -113,7 +113,7 @@ Local dev is useful for app behavior and UI checks, but it is not proof of deplo
 
 ## Admin Setup
 
-For a fresh database, deploy and open `/_/`. Pocketflare redirects to PocketBase's tokenized first-access installer, where you create the first superuser.
+For a fresh database, deploy and open `/_pf`. Pocketflare redirects to PocketBase's tokenized first-access installer, where you create the first superuser. After setup, use `/_/` for the normal PocketBase admin UI.
 
 Headless bootstrap is still supported by setting `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD` in the Worker environment, but it is not the normal path. Remove those values after the first successful boot.
 
@@ -181,12 +181,11 @@ binding = "BACKUPS"
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
-run_worker_first = ["/_", "/_/"]
 ```
 
 `STORAGE` and `BACKUPS` are used by Pocketflare's R2 filesystem adapter. Do not enable PocketBase S3 just to make file fields work.
 
-`ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` so browser fan-out for admin static files does not boot the Go WASM runtime. The `run_worker_first` entries are intentionally limited to `/_` and `/_/` so Pocketflare can redirect an empty database to the first-superuser installer; nested admin static assets still stay on Workers Assets.
+`ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` so browser fan-out for admin static files does not boot the Go WASM runtime. Pocketflare's `/_pf` route is the one-time first-superuser setup entry point; `/_` and nested admin assets stay on Workers Assets.
 
 ## File Storage
 

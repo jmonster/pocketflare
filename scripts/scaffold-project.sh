@@ -173,7 +173,6 @@ bucket_name = "$(toml_escape "$backups_bucket")"
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
-run_worker_first = ["/_", "/_/"]
 
 # ── Cron triggers ──────────────────────────────────────────────────────────
 # Uncomment to enable scheduled tasks. PocketBase cron jobs run on the
@@ -268,7 +267,7 @@ main() {
     echo "  pnpm install"
     echo "  make build"
     echo "  make deploy"
-    echo "  open /_/ after deploy to create the first PocketBase superuser"
+    echo "  open /_pf after deploy to create the first PocketBase superuser"
 }
 
 main "$@"

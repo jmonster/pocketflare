@@ -14,7 +14,7 @@ make dev                     # pnpm exec wrangler dev
 
 ## Runtime Shape
 
-`worker.mjs` is the Worker entry point. `/_` and `/_/` run the Worker first so an empty database can redirect once to PocketBase's tokenized first-superuser installer. Nested `/_/*` admin static assets stay on Cloudflare Workers Assets before WASM boots. Dynamic API traffic uses a lazy singleton Go/PocketBase runtime per Worker isolate. This avoids concurrent browser asset fan-out creating multiple large Go WASM heaps in one isolate.
+`worker.mjs` is the Worker entry point. `/_pf` is the first-run setup route; it boots the runtime only to redirect an empty database to PocketBase's tokenized first-superuser installer. `/_` and nested `/_/*` admin static assets stay on Cloudflare Workers Assets before WASM boots. Dynamic API traffic uses a lazy singleton Go/PocketBase runtime per Worker isolate. This avoids concurrent browser asset fan-out creating multiple large Go WASM heaps in one isolate.
 
 Go entrypoint: `cmd/pocketflare/main.go`
 
@@ -25,7 +25,7 @@ Adapter: `adapter.New(config)` wires:
 - R2 `BACKUPS` for upstream PocketBase backup zip artifacts, not complete Pocketflare data backups.
 - Workers Assets `ASSETS` for the checked-in admin UI at `admin-ui/_`.
 
-Do not route admin static assets through Go/WASM. Only `/_` and `/_/` should run Worker-first for installer discovery; nested static admin requests should stay on Workers Assets.
+Do not route admin static assets through Go/WASM. `/_pf` owns installer discovery; `/_` and nested static admin requests should stay on Workers Assets.
 
 ## Configuration
 
@@ -44,7 +44,7 @@ Runtime env vars:
 
 `adapter.New` applies `POCKETFLARE_APP_URL` and trusted proxy header defaults before `Bootstrap()`. PocketBase persists those only when no `_params/settings` row exists, so migrated and already-deployed projects keep their stored settings. New databases default `TrustedProxy.Headers` to `["CF-Connecting-IP"]`.
 
-Normal new-project admin setup should use PocketBase's first-access installer at `/_/`. The `POCKETFLARE_ADMIN_*` env path exists only for headless bootstrap and should be removed after the first successful boot. Do not commit credentials. `wrangler.toml` may contain non-secret resource names/IDs.
+Normal new-project admin setup should use Pocketflare's `/_pf` route, which redirects to PocketBase's first-access installer when no superuser exists. The `POCKETFLARE_ADMIN_*` env path exists only for headless bootstrap and should be removed after the first successful boot. Do not commit credentials. `wrangler.toml` may contain non-secret resource names/IDs.
 
 ## Cloudflare Bindings
 
@@ -64,10 +64,9 @@ Migration docs for local and existing S3-backed PocketBase storage live in `docs
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
-run_worker_first = ["/_", "/_/"]
 ```
 
-Cloudflare's default static-asset routing can serve matching files without Worker code. `worker.mjs` explicitly calls `env.ASSETS.fetch(req)` for admin paths as a no-rewrite fallback after the installer check.
+Cloudflare's default static-asset routing can serve matching files without Worker code. `worker.mjs` explicitly calls `env.ASSETS.fetch(req)` for admin paths as a no-rewrite fallback; installer discovery is isolated to `/_pf`.
 
 ## PocketBase Patch Set
 

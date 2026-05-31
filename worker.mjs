@@ -104,27 +104,21 @@ function runtimeStateForRequest() {
 async function fetch(req, env, ctx) {
   const fetchStart = performance.now();
   const url = new URL(req.url);
-  if ((url.pathname === "/_" || url.pathname === "/_/") && !hasCookie(req, "pocketflare_installer_checked")) {
+  if (url.pathname === "/_pf" || url.pathname === "/_pf/") {
     const runtimeState = runtimeStateForRequest();
     const runtimeWaitStart = performance.now();
     const binding = await getBinding(env, ctx);
     const runtimeWaitDone = performance.now();
-    const redirectURL = await binding.installerRedirectURL(req.url);
-    if (redirectURL) {
-      const headers = new Headers({
-        "Location": redirectURL,
-        "Set-Cookie": "pocketflare_installer_checked=1; Max-Age=60; Path=/; SameSite=Lax",
-      });
-      return withTimingHeaders(new Response(null, { status: 302, headers }), {
-        route: "installer",
-        runtime: runtimeState,
-        bootId: runtimeMetrics?.bootId,
-        serverTiming: [
-          ["pf_total", performance.now() - fetchStart],
-          ["pf_runtime_wait", runtimeWaitDone - runtimeWaitStart],
-        ],
-      });
-    }
+    const redirectURL = await binding.installerRedirectURL(req.url) || new URL("/_/", req.url).toString();
+    return withTimingHeaders(Response.redirect(redirectURL, 302), {
+      route: "installer",
+      runtime: runtimeState,
+      bootId: runtimeMetrics?.bootId,
+      serverTiming: [
+        ["pf_total", performance.now() - fetchStart],
+        ["pf_runtime_wait", runtimeWaitDone - runtimeWaitStart],
+      ],
+    });
   }
 
   if (url.pathname === "/_" || url.pathname.startsWith("/_/")) {
@@ -191,11 +185,6 @@ async function fetch(req, env, ctx) {
       { status: 500, headers: { 'Content-Type': 'text/plain' } }
     );
   }
-}
-
-function hasCookie(req, name) {
-  const cookies = req.headers.get("Cookie") || "";
-  return cookies.split(";").some((part) => part.trim().startsWith(`${name}=`));
 }
 
 function appendBootTimings(serverTiming, metrics) {

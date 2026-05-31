@@ -6,6 +6,8 @@ Pocketflare runs PocketBase on Cloudflare Workers by compiling PocketBase to Go 
 
 ```
 Browser
+  ├─ /_pf first-run admin setup
+  │    └─ worker.mjs redirects empty databases to PocketBase's installer
   ├─ /_/* static admin files
   │    └─ Cloudflare Workers Assets binding: ASSETS -> admin-ui/_
   ├─ /api/realtime (GET)
@@ -26,7 +28,7 @@ Browser
 
 `worker.mjs` keeps one Go runtime per isolate. This is intentional: browser admin pages load many files in parallel, and creating one Go WASM runtime per request can exceed the Worker memory limit.
 
-Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, not by PocketBase. `/_` and `/_/` run Worker-first only to redirect empty databases to the tokenized first-superuser installer. Nested admin static assets remain asset-first so browser fan-out does not boot the Go runtime.
+Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, not by PocketBase. `/_pf` is Pocketflare's first-run setup route; it boots the runtime only to redirect empty databases to the tokenized first-superuser installer. `/_` and nested admin static assets remain asset-first so browser fan-out does not boot the Go runtime.
 
 ## Project Layout
 
@@ -91,7 +93,7 @@ The script prompts for:
 
 The generated `wrangler.toml` sets `POCKETFLARE_APP_URL` to the chosen Worker URL. On a fresh database, Pocketflare saves that as PocketBase's app URL. It also trusts `CF-Connecting-IP` by default. Existing settings rows are not overwritten.
 
-Admin setup uses PocketBase's first-access installer at `/_/` by default. When no real superuser exists, Pocketflare redirects `/_/` to `/_/#/pbinstal/<token>`. Headless bootstrap is available through `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD`, but it should be treated as an escape hatch and removed after the first successful boot.
+Admin setup uses Pocketflare's `/_pf` route. When no real superuser exists, it redirects to PocketBase's `/_/#/pbinstal/<token>` first-access installer. After setup, use `/_/` for the admin UI. Headless bootstrap is available through `POCKETFLARE_ADMIN_EMAIL` and `POCKETFLARE_ADMIN_PASSWORD`, but it should be treated as an escape hatch and removed after the first successful boot.
 
 ## Email
 

@@ -4854,7 +4854,7 @@ index 3cae1c9..faf4412 100644
      .list-content {
          overflow: auto;
 diff --git a/ui/src/components/settings/PageBackups.svelte b/ui/src/components/settings/PageBackups.svelte
-index 0fcc4f3..e25435b 100644
+index 0fcc4f3..e33c3e6 100644
 --- a/ui/src/components/settings/PageBackups.svelte
 +++ b/ui/src/components/settings/PageBackups.svelte
 @@ -1,95 +1,13 @@
@@ -5136,7 +5136,7 @@ index 0fcc4f3..e25435b 100644
 -                                <span class="txt">Reset</span>
 -                            </button>
 -                        {/if}
-+            <div class="alert alert-warning m-b-base">
++            <div class="alert alert-pocketflare m-b-base">
 +                <div class="icon">
 +                    <i class="ri-error-warning-line" />
 +                </div>
@@ -5170,7 +5170,7 @@ index 0fcc4f3..e25435b 100644
      </div>
  </PageWrapper>
 diff --git a/ui/src/components/settings/PageStorage.svelte b/ui/src/components/settings/PageStorage.svelte
-index 1fd8167..f97f295 100644
+index 1fd8167..07b4786 100644
 --- a/ui/src/components/settings/PageStorage.svelte
 +++ b/ui/src/components/settings/PageStorage.svelte
 @@ -1,80 +1,9 @@
@@ -5365,7 +5365,7 @@ index 1fd8167..f97f295 100644
 -                    >
 -                        <span class="txt">Save changes</span>
 -                    </button>
-+            <div class="alert alert-info m-0">
++            <div class="alert alert-pocketflare m-0">
 +                <div class="icon">
 +                    <i class="ri-information-line" />
 +                </div>
@@ -5546,3 +5546,27 @@ index 8e4f47e..0000000
 -        <div class="col-lg-12" />
 -    </div>
 -{/if}
+diff --git a/ui/src/scss/_alert.scss b/ui/src/scss/_alert.scss
+index cd55421..1678c56 100644
+--- a/ui/src/scss/_alert.scss
++++ b/ui/src/scss/_alert.scss
+@@ -80,6 +80,19 @@
+             color: var(--warningColor);
+         }
+     }
++    &.alert-pocketflare {
++        background: #fff1e6;
++        box-shadow: inset 4px 0 0 #f38020;
++        border: 1px solid rgba(243, 128, 32, 0.35);
++        .icon {
++            color: #f38020;
++            border-right-color: rgba(243, 128, 32, 0.2);
++        }
++        code,
++        hr {
++            background: rgba(243, 128, 32, 0.14);
++        }
++    }
+     &.alert-success {
+         background: var(--successAltColor);
+         .icon {

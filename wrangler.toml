@@ -38,7 +38,6 @@ bucket_name = "pocketflare-backups"
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
-run_worker_first = ["/_", "/_/"]
 
 [triggers]
 crons = ["* * * * *"]
