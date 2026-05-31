@@ -1,8 +1,6 @@
-# Pocketflare
-
 ![Pocketflare hero](art/hero.png)
 
-Pocketflare packages [PocketBase] for Cloudflare Workers. It runs [PocketBase] as Go WASM, uses D1 for [PocketBase] databases, uses R2 for file storage/backups, and serves the [PocketBase] admin UI through Workers Assets.
+Pocketflare repackages [PocketBase] for Cloudflare Workers. It compiles and runs [PocketBase] as Go WASM, uses D1 for [PocketBase] databases, uses R2 for file storage/backups, and serves the [PocketBase] admin UI through Workers Assets.
 
 ## Runtime Timing
 
