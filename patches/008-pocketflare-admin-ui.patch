@@ -4854,7 +4854,7 @@ index 3cae1c9..faf4412 100644
      .list-content {
          overflow: auto;
 diff --git a/ui/src/components/settings/PageBackups.svelte b/ui/src/components/settings/PageBackups.svelte
-index 0fcc4f3..917ca95 100644
+index 0fcc4f3..6a7475f 100644
 --- a/ui/src/components/settings/PageBackups.svelte
 +++ b/ui/src/components/settings/PageBackups.svelte
 @@ -1,99 +1,9 @@
@@ -4968,7 +4968,7 @@ index 0fcc4f3..917ca95 100644
 -                <BackupUploadButton class="btn-sm" on:success={refreshList} />
 +        <div class="panel">
 +            <div class="content txt-xl m-b-base">
-+                <p>Pocketflare backup artifacts are not complete Pocketflare backups.</p>
++                <p>Use D1 Time Travel or D1 export for database backups. Back up R2 storage separately.</p>
              </div>
  
 -            <BackupsList bind:this={backupsListComponent} />
