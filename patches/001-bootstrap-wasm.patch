@@ -1,3 +1,13 @@
+From a78c480f8a60dc96e6d11edaf450ebf6113b01a3 Mon Sep 17 00:00:00 2001
+From: Johnny D <goforjohnny@icloud.com>
+Date: Sun, 31 May 2026 16:49:45 -0400
+Subject: [PATCH 2/3] patch: bootstrap wasm
+
+---
+ core/base.go           | 49 +-----------------------------------------
+ core/notify_watcher.go |  2 ++
+ 2 files changed, 3 insertions(+), 48 deletions(-)
+
 diff --git a/core/base.go b/core/base.go
 index 4551e3f..d1ca96c 100644
 --- a/core/base.go
@@ -12,27 +22,27 @@ index 4551e3f..d1ca96c 100644
  	"github.com/pocketbase/pocketbase/tools/mailer"
 @@ -399,7 +398,7 @@ func (app *BaseApp) Bootstrap() error {
  		}
-
+ 
  		// ensure that data dir exist
 -		if err := os.MkdirAll(app.DataDir(), os.ModePerm); err != nil {
 +		if err := app.prepareDataDir(); err != nil {
  			return err
  		}
-
+ 
 @@ -427,9 +426,6 @@ func (app *BaseApp) Bootstrap() error {
  			return err
  		}
-
+ 
 -		// try to cleanup the pb_data temp directory (if any)
 -		_ = os.RemoveAll(filepath.Join(app.DataDir(), LocalTempDirName))
 -
  		return nil
  	})
-
+ 
 @@ -706,49 +702,6 @@ func (app *BaseApp) NewMailClient() mailer.Mailer {
  	return client
  }
-
+ 
 -// NewFilesystem creates a new local or S3 filesystem instance
 -// for managing regular app files (ex. record uploads)
 -// based on the current app settings.
@@ -87,5 +97,8 @@ index 1f548cd..90b700b 100644
 +//go:build !js
 +
  package core
-
+ 
  import (
+-- 
+2.50.1 (Apple Git-155)
+
