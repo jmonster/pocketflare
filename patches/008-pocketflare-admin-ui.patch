@@ -4854,10 +4854,10 @@ index 3cae1c9..faf4412 100644
      .list-content {
          overflow: auto;
 diff --git a/ui/src/components/settings/PageBackups.svelte b/ui/src/components/settings/PageBackups.svelte
-index 0fcc4f3..e33c3e6 100644
+index 0fcc4f3..917ca95 100644
 --- a/ui/src/components/settings/PageBackups.svelte
 +++ b/ui/src/components/settings/PageBackups.svelte
-@@ -1,95 +1,13 @@
+@@ -1,99 +1,9 @@
  <script>
 -    import { slide } from "svelte/transition";
 -    import ApiClient from "@/utils/ApiClient";
@@ -4869,15 +4869,15 @@ index 0fcc4f3..e33c3e6 100644
      import PageWrapper from "@/components/base/PageWrapper.svelte";
 -    import Field from "@/components/base/Field.svelte";
 -    import Toggler from "@/components/base/Toggler.svelte";
-     import RefreshButton from "@/components/base/RefreshButton.svelte";
+-    import RefreshButton from "@/components/base/RefreshButton.svelte";
      import SettingsSidebar from "@/components/settings/SettingsSidebar.svelte";
-     import BackupsList from "@/components/settings/BackupsList.svelte";
+-    import BackupsList from "@/components/settings/BackupsList.svelte";
 -    import S3Fields from "@/components/settings/S3Fields.svelte";
 -    import BackupUploadButton from "@/components/settings/BackupUploadButton.svelte";
  
      $pageTitle = "Backups";
- 
-     let backupsListComponent;
+-
+-    let backupsListComponent;
 -    let originalFormSettings = {};
 -    let formSettings = {};
 -    let isLoading = false;
@@ -4950,20 +4950,25 @@ index 0fcc4f3..e33c3e6 100644
 -        formSettings = JSON.parse(JSON.stringify(originalFormSettings || { backups: {} }));
 -        enableAutoBackups = formSettings.backups.cron != "";
 -    }
+-
+-    async function refreshList() {
+-        return backupsListComponent?.loadBackups();
+-    }
+ </script>
  
-     async function refreshList() {
-         return backupsListComponent?.loadBackups();
-@@ -107,196 +25,30 @@
+ <SettingsSidebar />
+@@ -107,196 +17,27 @@
      </header>
  
      <div class="wrapper">
 -        <div class="panel" autocomplete="off" on:submit|preventDefault={save}>
-+        <div class="panel">
-             <div class="flex m-b-sm flex-gap-10">
+-            <div class="flex m-b-sm flex-gap-10">
 -                <span class="txt-xl">Backup and restore your PocketBase data</span>
-+                <span class="txt-xl">Pocketflare backup artifacts</span>
-                 <RefreshButton class="btn-sm" tooltip={"Refresh"} on:refresh={refreshList} />
+-                <RefreshButton class="btn-sm" tooltip={"Refresh"} on:refresh={refreshList} />
 -                <BackupUploadButton class="btn-sm" on:success={refreshList} />
++        <div class="panel">
++            <div class="content txt-xl m-b-base">
++                <p>Pocketflare backup artifacts are not complete Pocketflare backups.</p>
              </div>
  
 -            <BackupsList bind:this={backupsListComponent} />
@@ -5136,7 +5141,20 @@ index 0fcc4f3..e33c3e6 100644
 -                                <span class="txt">Reset</span>
 -                            </button>
 -                        {/if}
-+            <div class="alert alert-pocketflare m-b-base">
+-
+-                        <button
+-                            type="submit"
+-                            class="btn btn-expanded"
+-                            class:btn-loading={isSaving}
+-                            disabled={!hasChanges || isSaving}
+-                            on:click={() => save()}
+-                        >
+-                            <span class="txt">Save changes</span>
+-                        </button>
+-                    </div>
+-                </form>
+-            {/if}
++            <div class="alert alert-pocketflare m-0">
 +                <div class="icon">
 +                    <i class="ri-error-warning-line" />
 +                </div>
@@ -5152,20 +5170,6 @@ index 0fcc4f3..e33c3e6 100644
 +                    </p>
 +                </div>
 +            </div>
- 
--                        <button
--                            type="submit"
--                            class="btn btn-expanded"
--                            class:btn-loading={isSaving}
--                            disabled={!hasChanges || isSaving}
--                            on:click={() => save()}
--                        >
--                            <span class="txt">Save changes</span>
--                        </button>
--                    </div>
--                </form>
--            {/if}
-+            <BackupsList bind:this={backupsListComponent} />
          </div>
      </div>
  </PageWrapper>
