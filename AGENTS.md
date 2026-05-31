@@ -14,7 +14,7 @@ make dev                     # pnpm exec wrangler dev
 
 ## Runtime Shape
 
-`worker.mjs` is the Worker entry point. It serves `/_` and `/_/*` through the Cloudflare Workers Assets binding before WASM boots. Dynamic API traffic uses a lazy singleton Go/PocketBase runtime per Worker isolate. This avoids concurrent browser asset fan-out creating multiple large Go WASM heaps in one isolate.
+`worker.mjs` is the Worker entry point. `/_` and `/_/` run the Worker first so an empty database can redirect once to PocketBase's tokenized first-superuser installer. Nested `/_/*` admin static assets stay on Cloudflare Workers Assets before WASM boots. Dynamic API traffic uses a lazy singleton Go/PocketBase runtime per Worker isolate. This avoids concurrent browser asset fan-out creating multiple large Go WASM heaps in one isolate.
 
 Go entrypoint: `cmd/pocketflare/main.go`
 
@@ -25,7 +25,7 @@ Adapter: `adapter.New(config)` wires:
 - R2 `BACKUPS` for upstream PocketBase backup zip artifacts, not complete Pocketflare data backups.
 - Workers Assets `ASSETS` for the checked-in admin UI at `admin-ui/_`.
 
-Do not route admin static assets through Go/WASM. Static admin requests should stay on Workers Assets.
+Do not route admin static assets through Go/WASM. Only `/_` and `/_/` should run Worker-first for installer discovery; nested static admin requests should stay on Workers Assets.
 
 ## Configuration
 
@@ -64,9 +64,10 @@ Migration docs for local and existing S3-backed PocketBase storage live in `docs
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
+run_worker_first = ["/_", "/_/"]
 ```
 
-Cloudflare's default static-asset routing can serve matching files without Worker code. `worker.mjs` also explicitly calls `env.ASSETS.fetch(req)` for `/_` and `/_/*` as a no-rewrite fallback.
+Cloudflare's default static-asset routing can serve matching files without Worker code. `worker.mjs` explicitly calls `env.ASSETS.fetch(req)` for admin paths as a no-rewrite fallback after the installer check.
 
 ## PocketBase Patch Set
 
@@ -96,7 +97,7 @@ Use the narrowest proof that exercises the touched surface:
 - Go/runtime changes: `make build`.
 - Worker packaging/config: `pnpm exec wrangler deploy --dry-run --outdir .artifacts/deploy-dry-run`.
 - Script syntax: `bash -n scripts/<name>.sh`.
-- Admin asset regression: concurrent requests to `/_/...` should return from Workers Assets and not boot WASM.
+- Admin asset regression: concurrent requests to nested `/_/...` static assets should return from Workers Assets and not boot WASM.
 
 Do not run broad suites unless requested. Do not rerun failures without diagnosing the mechanism.
 

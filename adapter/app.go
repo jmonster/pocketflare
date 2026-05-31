@@ -72,6 +72,7 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 			return nil, nil, fmt.Errorf("superuser: %w", err)
 		}
 	}
+	registerInstallerBinding(pb)
 
 	pbRouter, err := apis.NewRouter(pb)
 	if err != nil {

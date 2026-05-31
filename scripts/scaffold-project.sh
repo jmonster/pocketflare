@@ -173,6 +173,7 @@ bucket_name = "$(toml_escape "$backups_bucket")"
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
+run_worker_first = ["/_", "/_/"]
 
 # ── Cron triggers ──────────────────────────────────────────────────────────
 # Uncomment to enable scheduled tasks. PocketBase cron jobs run on the
