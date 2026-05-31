@@ -11,6 +11,22 @@ make dev                     # pnpm exec wrangler dev
 ./scripts/scaffold-project.sh
 ```
 
+## Wrangler `--remote` is ALWAYS required
+
+Wrangler v4 `d1 execute` and `r2 object put` default to **local**. The Worker reads from **remote** D1/R2. Every command that touches production resources must include `--remote`. Local is a dev-only mirror with no connection to the deployed Worker.
+
+```sh
+# WRONG — data goes to local, Worker never sees it
+pnpm exec wrangler d1 execute my-app --command="SELECT ..."
+pnpm exec wrangler r2 object put "bucket/key" --file ./local-file
+
+# RIGHT
+pnpm exec wrangler d1 execute my-app --remote --command="SELECT ..."
+pnpm exec wrangler r2 object put "bucket/key" --file ./local-file --remote
+```
+
+**`migrate-files.sh` does NOT add `--remote` automatically.** If you use it for a real migration, either pass `--remote` in the script or upload through the PocketBase API directly (which uses the Worker's R2 binding and always hits remote).
+
 `internal/pocketbase/`, `dist/`, `.wrangler/`, `node_modules/`, `.artifacts/`, `pb_data/`, SQLite files, env files, and local dev vars are intentionally ignored. A fresh clone is not build-ready until `./scripts/update-pb.sh` has run.
 
 ## Runtime Shape
@@ -122,6 +138,33 @@ Consequences:
 - Normal single-statement CRUD is fine.
 - Migrations are statement-by-statement.
 - Batch/import/custom hooks that expect cross-statement rollback can leave partial writes.
+
+## D1 Data Import (migrating from SQLite PocketBase)
+
+When importing an existing PocketBase database into D1:
+
+**Always use `--remote`.** Wrangler v4 `d1 execute` defaults to local. Imports, schema changes, and queries against the Worker's database must use `--remote`. The Worker reads from remote D1; local is a dev-only mirror.
+
+**D1 replication delay.** After DDL changes (DROP TABLE, CREATE TABLE), wait 30–60 seconds before letting the Worker boot against the new schema. D1 replicas lag behind the primary and the Worker will see stale state.
+
+**Bootstrap strategy.** The safest migration path is:
+1. Start with empty D1 databases
+2. Let Pocketflare bootstrap PocketBase (creates system tables with the current version's schema)
+3. Import only app/user data on top — NOT system tables (`_params`, `_collections`, `_migrations`, `_superusers`, `_authOrigins`, `_externalAuths`, `_mfas`, `_otps`)
+4. Import app-specific `_collections` entries (skip the system ones PocketBase already created)
+5. Recreate SQL VIEWs — PocketBase public views are views, not tables
+6. Patch `_params/settings` with target environment values
+7. Import `_logs` to LOGS_DB
+
+The `_migrations` table from an older PocketBase version has entries that the current version's migration runner may not match exactly. Importing it causes the runner to re-apply migrations against existing tables, which fails on D1 because the init migration uses `CREATE TABLE` without `IF NOT EXISTS`. Bootstrapping clean avoids this entirely.
+
+**Password hashes are portable.** PocketBase uses standard `$2a$10$` bcrypt. Hashes from any PocketBase version work in any other. The auth token signing key is generated fresh during bootstrap — existing JWT tokens are invalidated, but users can log in again with their same password. Superusers should be created fresh via `POCKETFLARE_ADMIN_EMAIL`/`POCKETFLARE_ADMIN_PASSWORD` env vars or the `/_pf` installer flow.
+
+**Schema drift from JS migrations.** If the old PocketBase had custom `pb_migrations/*.js` that added columns (e.g. `users.disclaimer_agreed`), those columns must be added via ALTER TABLE before importing user data. PocketBase v0.39 creates tables with its own schema, which won't include columns added by old JS migrations.
+
+**Views, not tables.** PocketBase creates public sharing collections (e.g. `pool_share_public`) as SQL VIEWs. If a migration script creates them as tables, drop and recreate as views from the source schema dump.
+
+**`migrate-data.sh` includes `_migrations` by default.** Pass `--exclude-migrations` for clean imports where you want PocketBase to run migrations fresh.
 
 ## Validation
 

@@ -123,11 +123,11 @@ while IFS= read -r -d '' filepath; do
 
     if [[ "$EXECUTE" == true ]]; then
         echo "# Uploading: $relpath ($(human_size "$filesize"))"
-        pnpm exec wrangler r2 object put "$BUCKET/$OBJECT_KEY" --file "$filepath" 2>/dev/null || {
+        pnpm exec wrangler r2 object put --remote "$BUCKET/$OBJECT_KEY" --file "$filepath" 2>/dev/null || {
             echo "# FAILED: $relpath"
         }
     else
-        echo "pnpm exec wrangler r2 object put \"$BUCKET/$OBJECT_KEY\" --file \"$filepath\""
+        echo "pnpm exec wrangler r2 object put --remote \"$BUCKET/$OBJECT_KEY\" --file \"$filepath\""
     fi
 done < <(find "$STORAGE_ABS" -type f -print0)
 
