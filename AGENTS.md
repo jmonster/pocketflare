@@ -22,7 +22,7 @@ Adapter: `adapter.New(config)` wires:
 - D1 `APP_DB` for PocketBase data.
 - D1 `LOGS_DB` for PocketBase auxiliary/log data.
 - R2 `STORAGE` for PocketBase file storage.
-- R2 `BACKUPS` for PocketBase backups.
+- R2 `BACKUPS` for upstream PocketBase backup zip artifacts, not complete Pocketflare data backups.
 - Workers Assets `ASSETS` for the checked-in admin UI at `admin-ui/_`.
 
 Do not route admin static assets through Go/WASM. Static admin requests should stay on Workers Assets.
@@ -50,7 +50,7 @@ Normal new-project admin setup should use PocketBase's first-access installer at
 
 `STORAGE` and `BACKUPS` are live R2 bindings. They are not dead and do not require enabling PocketBase S3 settings for normal file storage. The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
 
-Known caveat: backup restore still has one upstream branch that checks `Settings().Backups.S3.Enabled`. Backup create/list/upload use R2; restore is not fully decoupled from S3 settings yet.
+PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but it should not be treated as restorable production data. Use D1 Time Travel/export for database backup and copy/snapshot the `STORAGE` R2 bucket separately for uploaded files. Backup restore is unsupported on Workers.
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 

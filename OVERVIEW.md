@@ -53,13 +53,15 @@ Required bindings:
 - `APP_DB`: D1 database for PocketBase application data.
 - `LOGS_DB`: D1 database for PocketBase auxiliary/log data.
 - `STORAGE`: R2 bucket for PocketBase file fields.
-- `BACKUPS`: R2 bucket for PocketBase backups.
+- `BACKUPS`: R2 bucket for upstream PocketBase backup zip artifacts, not complete Pocketflare data backups.
 - `ASSETS`: Workers Assets binding for `admin-ui/`.
 - `REALTIME_DO`: (optional) Durable Object for SSE connections. Uncomment in `wrangler.toml` to enable; adds ~$4/mo for a single always-warm DO instance.
 
 A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives PocketBase's cron scheduler.
 
-`STORAGE` and `BACKUPS` are used directly by the patched WASM filesystem path. Users do not need to enable PocketBase's S3 file-storage feature for normal file fields. One backup-restore branch still consults PocketBase's backup S3 setting; backup restore needs follow-up before claiming full S3 independence.
+`STORAGE` and `BACKUPS` are used directly by the patched WASM filesystem path. Users do not need to enable PocketBase's S3 file-storage feature for normal file fields.
+
+PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives local `pb_data`, while Pocketflare stores app data in D1 and file fields in R2. Use D1 Time Travel/export for database backup and copy/snapshot `STORAGE` separately for uploaded files. Backup restore is unsupported on Workers.
 
 `ASSETS` is not an R2 bucket. It is a Workers Assets binding. Matching static assets can be served by Cloudflare without invoking Worker code.
 
@@ -180,7 +182,7 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
 - HTTP mail providers and webhook email are the recommended production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
-- Backup restore is not fully decoupled from PocketBase backup S3 settings.
+- PocketBase backups are not complete data backups on Pocketflare because D1 and R2 data live outside `pb_data`. Use D1 Time Travel/export plus a separate R2 file backup plan.
 
 ## References
 

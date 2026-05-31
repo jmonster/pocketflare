@@ -171,6 +171,21 @@ Terminology:
 
 When optional R2 API credentials are configured, Copy can use server-side S3 `CopyObject` so object bytes do not pass through the Worker. Without those credentials, the intended fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. Treat the fallback as needing runtime proof before relying on it for large objects.
 
+## Backups
+
+Use Cloudflare D1 Time Travel or D1 export for database backups, not PocketBase's upstream backup system.
+
+PocketBase backups archive the local `pb_data` directory. In Pocketflare, the application database lives in the `APP_DB` D1 binding, logs live in the `LOGS_DB` D1 binding, and uploaded files live in the `STORAGE` R2 binding. Those resources are outside the ephemeral Worker data directory, so an upstream PocketBase backup zip is not a complete application backup.
+
+If PocketBase backup creation or auto backups are enabled, the resulting zip is stored through the `BACKUPS` R2 binding, but it should not be treated as restorable production data on Pocketflare. Backup restore is unsupported on Workers today.
+
+For production:
+
+- Use D1 Time Travel for point-in-time database restore.
+- Export D1 to durable storage when you need backup retention beyond D1 Time Travel's window.
+- Back up or copy the `STORAGE` R2 bucket separately for uploaded files.
+- Leave PocketBase backup S3 settings disabled; they are not the source of truth for Pocketflare backups.
+
 ## Migrate Existing PocketBase
 
 1. Scaffold a Pocketflare project.
@@ -221,7 +236,7 @@ Current Worker limits that shape Pocketflare:
 - PocketBase rate limiting uses PocketBase's upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. It is useful as best-effort app protection, but use Cloudflare WAF/rate limiting for edge-wide abuse protection. A Durable Object-backed limiter would be needed for globally exact PocketBase rate-limit semantics.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by PocketBase's in-process ticker.
 - HTTP mail providers and webhook delivery are the production paths. SMTP sockets exist but need provider-level proof, especially STARTTLS on port 587.
-- Backup restore still needs a cleanup pass to remove the last dependency on PocketBase backup S3 settings.
+- PocketBase backups are not complete data backups on Pocketflare because D1 and R2 data live outside `pb_data`. Use D1 Time Travel/export plus a separate R2 file backup plan.
 
 ## References
 
@@ -229,5 +244,7 @@ Current Worker limits that shape Pocketflare:
 - Cloudflare Workers pricing: https://developers.cloudflare.com/workers/platform/pricing/
 - Cloudflare Durable Objects pricing: https://developers.cloudflare.com/durable-objects/platform/pricing/
 - Cloudflare D1 pricing: https://developers.cloudflare.com/workers/platform/pricing/#d1
+- Cloudflare D1 Time Travel: https://developers.cloudflare.com/d1/reference/time-travel/
+- Cloudflare D1 import/export: https://developers.cloudflare.com/d1/best-practices/import-export-data/
 - Cloudflare R2 pricing: https://developers.cloudflare.com/r2/pricing/
 - Cloudflare R2 upload methods: https://developers.cloudflare.com/r2/objects/upload-objects/
