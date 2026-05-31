@@ -159,6 +159,8 @@ binding = "ASSETS"
 
 Do not enable PocketBase S3 for normal Pocketflare file fields. In the Workers build, Pocketflare injects an R2 filesystem adapter and ignores the upstream local/S3 filesystem path for file storage.
 
+The upstream admin "Files storage" page is misleading for Pocketflare today: file fields already use the `STORAGE` R2 binding, and the PocketBase S3 form is not the source of truth. Leave it disabled unless you are deliberately testing upstream S3 behavior outside normal Pocketflare file storage.
+
 Standard PocketBase file uploads and downloads are still mediated by the PocketBase API. Direct browser-to-R2 uploads and signed R2 download redirects are possible future Pocketflare features, not effects of enabling PocketBase S3.
 
 Terminology:
@@ -212,6 +214,7 @@ Current Worker limits that shape Pocketflare:
 ## Current Limits
 
 - D1 cannot provide SQLite-equivalent multi-statement rollback through `database/sql`; each statement commits independently.
+- Batch API requests run through PocketBase's upstream `/api/batch` handler, but they are not atomic on Pocketflare. If one operation in a batch fails, earlier writes in the same batch may already be committed to D1.
 - Uploads and downloads still pass through the Worker; direct browser-to-R2 upload and signed R2 download redirects are not implemented.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
