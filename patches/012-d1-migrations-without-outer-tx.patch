@@ -1,0 +1,170 @@
+diff --git a/core/migrations_runner.go b/core/migrations_runner.go
+index 9b0ff76..1aab54c 100644
+--- a/core/migrations_runner.go
++++ b/core/migrations_runner.go
+@@ -16,6 +16,11 @@ var SystemMigrations MigrationsList
+ 
+ const DefaultMigrationsTable = "_migrations"
+ 
++// RunMigrationsWithoutTransaction disables the outer migrations transaction.
++// D1 cannot run PocketBase's legacy read-after-write migration callbacks inside
++// a batch transaction, so Pocketflare enables this for the D1 backend.
++var RunMigrationsWithoutTransaction bool
++
+ // MigrationsRunner defines a simple struct for managing the execution of db migrations.
+ type MigrationsRunner struct {
+ 	app            App
+@@ -126,49 +131,56 @@ func (r *MigrationsRunner) Up() ([]string, error) {
+ 
+ 	applied := []string{}
+ 
+-	err := r.app.AuxRunInTransaction(func(txApp App) error {
+-		return txApp.RunInTransaction(func(txApp App) error {
+-			for _, m := range r.migrationsList.Items() {
+-				// applied migrations check
+-				if r.isMigrationApplied(txApp, m.File) {
+-					if m.ReapplyCondition == nil {
+-						continue // no need to reapply
+-					}
+-
+-					shouldReapply, err := m.ReapplyCondition(txApp, r, m.File)
+-					if err != nil {
+-						return err
+-					}
+-					if !shouldReapply {
+-						continue
+-					}
+-
+-					// clear previous history stored entry
+-					// (it will be recreated after successful execution)
+-					r.saveRevertedMigration(txApp, m.File)
++	run := func(txApp App) error {
++		for _, m := range r.migrationsList.Items() {
++			// applied migrations check
++			if r.isMigrationApplied(txApp, m.File) {
++				if m.ReapplyCondition == nil {
++					continue // no need to reapply
+ 				}
+ 
+-				// ignore empty Up action
+-				if m.Up != nil {
+-					if err := m.Up(txApp); err != nil {
+-						return fmt.Errorf("failed to apply migration %s: %w", m.File, err)
+-					}
++				shouldReapply, err := m.ReapplyCondition(txApp, r, m.File)
++				if err != nil {
++					return err
++				}
++				if !shouldReapply {
++					continue
+ 				}
+ 
+-				if err := r.saveAppliedMigration(txApp, m.File); err != nil {
+-					return fmt.Errorf("failed to save applied migration info for %s: %w", m.File, err)
++				// clear previous history stored entry
++				// (it will be recreated after successful execution)
++				r.saveRevertedMigration(txApp, m.File)
++			}
++
++			// ignore empty Up action
++			if m.Up != nil {
++				if err := m.Up(txApp); err != nil {
++					return fmt.Errorf("failed to apply migration %s: %w", m.File, err)
+ 				}
++			}
+ 
+-				applied = append(applied, m.File)
++			if err := r.saveAppliedMigration(txApp, m.File); err != nil {
++				return fmt.Errorf("failed to save applied migration info for %s: %w", m.File, err)
+ 			}
+ 
+-			return nil
++			applied = append(applied, m.File)
++		}
++		return nil
++	}
++
++	var err error
++	if RunMigrationsWithoutTransaction {
++		err = run(r.app)
++	} else {
++		err = r.app.AuxRunInTransaction(func(txApp App) error {
++			return txApp.RunInTransaction(run)
+ 		})
+-	})
++	}
+ 
+ 	if err != nil {
+ 		return nil, err
+ 	}
++
+ 	return applied, nil
+ }
+ 
+@@ -188,36 +200,43 @@ func (r *MigrationsRunner) Down(toRevertCount int) ([]string, error) {
+ 		return nil, appliedErr
+ 	}
+ 
+-	err := r.app.AuxRunInTransaction(func(txApp App) error {
+-		return txApp.RunInTransaction(func(txApp App) error {
+-			for _, name := range names {
+-				for _, m := range r.migrationsList.Items() {
+-					if m.File != name {
+-						continue
+-					}
+-
+-					// revert limit reached
+-					if toRevertCount-len(reverted) <= 0 {
+-						return nil
+-					}
++	run := func(txApp App) error {
++		for _, name := range names {
++			for _, m := range r.migrationsList.Items() {
++				if m.File != name {
++					continue
++				}
+ 
+-					// ignore empty Down action
+-					if m.Down != nil {
+-						if err := m.Down(txApp); err != nil {
+-							return fmt.Errorf("failed to revert migration %s: %w", m.File, err)
+-						}
+-					}
++				// revert limit reached
++				if toRevertCount-len(reverted) <= 0 {
++					return nil
++				}
+ 
+-					if err := r.saveRevertedMigration(txApp, m.File); err != nil {
+-						return fmt.Errorf("failed to save reverted migration info for %s: %w", m.File, err)
++				// ignore empty Down action
++				if m.Down != nil {
++					if err := m.Down(txApp); err != nil {
++						return fmt.Errorf("failed to revert migration %s: %w", m.File, err)
+ 					}
++				}
+ 
+-					reverted = append(reverted, m.File)
++				if err := r.saveRevertedMigration(txApp, m.File); err != nil {
++					return fmt.Errorf("failed to save reverted migration info for %s: %w", m.File, err)
+ 				}
++
++				reverted = append(reverted, m.File)
+ 			}
+-			return nil
++		}
++		return nil
++	}
++
++	var err error
++	if RunMigrationsWithoutTransaction {
++		err = run(r.app)
++	} else {
++		err = r.app.AuxRunInTransaction(func(txApp App) error {
++			return txApp.RunInTransaction(run)
+ 		})
+-	})
++	}
+ 
+ 	if err != nil {
+ 		return nil, err

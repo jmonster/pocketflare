@@ -67,8 +67,21 @@ index 8cdd52a..1db91f9 100644
 +	}
 +	return out
 +}
+diff --git a/core/app.go b/core/app.go
+index 089c4e0..e0ad05f 100644
+--- a/core/app.go
++++ b/core/app.go
+@@ -486,7 +486,7 @@ type App interface {
+ 	// If oldCollection is null, then only newCollection is used to create the record table.
+ 	//
+ 	// This method is automatically invoked as part of a collection create/update/delete operation.
+-	SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection) error
++	SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection, oldCollectionTableExists ...bool) error
+ 
+ 	// ---------------------------------------------------------------
+ 
 diff --git a/core/collection_model.go b/core/collection_model.go
-index fff6241..c7368b9 100644
+index fff6241..a8fdedc 100644
 --- a/core/collection_model.go
 +++ b/core/collection_model.go
 @@ -710,11 +710,28 @@ func onCollectionDeleteExecute(e *CollectionEvent) error {
@@ -114,7 +127,22 @@ index fff6241..c7368b9 100644
  		// delete
  		return e.Next()
  	})
-@@ -865,22 +875,31 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+@@ -851,12 +861,14 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 	}()
+ 
+ 	var oldCollection *Collection
++	oldCollectionTableExists := false
+ 	if !e.Collection.IsNew() {
+ 		var err error
+ 		oldCollection, err = e.App.FindCachedCollectionByNameOrId(e.Collection.Id)
+ 		if err != nil {
+ 			return err
+ 		}
++		oldCollectionTableExists = e.App.HasTable(oldCollection.Name)
+ 
+ 		// invalidate previously issued auth tokens on auth rule change
+ 		if oldCollection.AuthRule != e.Collection.AuthRule &&
+@@ -865,22 +877,31 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
  		}
  	}
  
@@ -155,7 +183,7 @@ index fff6241..c7368b9 100644
  			// delete old renamed view
  			if oldCollection != nil {
  				if err := e.App.DeleteView(oldCollection.Name); err != nil {
-@@ -888,14 +907,8 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+@@ -888,14 +909,8 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
  				}
  			}
  
@@ -171,6 +199,15 @@ index fff6241..c7368b9 100644
  				return err
  			}
  
+@@ -910,7 +925,7 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 
+ 		// sync the changes with the related records table
+ 		if !isView {
+-			if err := e.App.SyncRecordTableSchema(e.Collection, oldCollection); err != nil {
++			if err := e.App.SyncRecordTableSchema(e.Collection, oldCollection, oldCollectionTableExists); err != nil {
+ 				// note: don't wrap to allow propagating indexes validation.Errors
+ 				return err
+ 			}
 diff --git a/core/collection_query.go b/core/collection_query.go
 index b19bb55..e84564a 100644
 --- a/core/collection_query.go
@@ -322,6 +359,37 @@ index b19bb55..e84564a 100644
  		return nil
  	})
  }
+diff --git a/core/collection_record_table_sync.go b/core/collection_record_table_sync.go
+index b7362fa..3ce9255 100644
+--- a/core/collection_record_table_sync.go
++++ b/core/collection_record_table_sync.go
+@@ -18,15 +18,24 @@ import (
+ // If oldCollection is null, then only newCollection is used to create the record table.
+ //
+ // This method is automatically invoked as part of a collection create/update/delete operation.
+-func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection) error {
++func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection, oldCollectionTableExists ...bool) error {
+ 	if newCollection.IsView() {
+ 		return nil // nothing to sync since views don't have records table
+ 	}
+ 
++	oldTableExists := false
++	if oldCollection != nil {
++		if len(oldCollectionTableExists) > 0 {
++			oldTableExists = oldCollectionTableExists[0]
++		} else {
++			oldTableExists = app.HasTable(oldCollection.Name)
++		}
++	}
++
+ 	txErr := app.RunInTransaction(func(txApp App) error {
+ 		// create
+ 		// -----------------------------------------------------------
+-		if oldCollection == nil || !app.HasTable(oldCollection.Name) {
++		if oldCollection == nil || !oldTableExists {
+ 			tableName := newCollection.Name
+ 
+ 			fields := newCollection.Fields
 diff --git a/core/record_model.go b/core/record_model.go
 index 7d578f2..3e472ff 100644
 --- a/core/record_model.go

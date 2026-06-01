@@ -69,9 +69,13 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 
 	applyNewInstallDefaults(pb, config)
 
-	// Wire the DO SQLite transaction hook before Bootstrap so migrations
-	// run inside transactionSync() when DB_MODE=do_sqlite.
-	if dbMode == "do_sqlite" {
+	// Configure transaction behavior before Bootstrap because system migrations
+	// run during Bootstrap.
+	core.RunInTransactionHook = nil
+	core.RunMigrationsWithoutTransaction = false
+	if dbMode == "d1" {
+		core.RunMigrationsWithoutTransaction = true
+	} else if dbMode == "do_sqlite" {
 		setupDoSqliteMode()
 	}
 
