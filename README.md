@@ -16,7 +16,7 @@ Pocketflare preserves the [PocketBase] API and runtime shape where Cloudflare pr
 
 Pocketflare does not turn arbitrary local filesystem, fsnotify, subprocess, or raw socket code into Worker-compatible code. Apps that read and write files directly with `os.*` should move those paths to PocketBase file APIs, R2 bindings, or another Worker-compatible service.
 
-D1 is the default database backend because it is cheap, highly available, and operationally simple. An optional Durable Object SQLite mode is planned for apps that need closer upstream SQLite transaction semantics.
+D1 is the default database backend because it is cheap, highly available, and operationally simple. Durable Object SQLite is available as an opt-in mode for apps that need upstream-style SQLite transactions.
 
 ## Quick Start
 
@@ -26,7 +26,7 @@ Scaffold a new Pocketflare project:
 ./scripts/scaffold-project.sh
 ```
 
-The scaffold prompts for the target directory, Go module path, Worker name, app URL, D1 databases, R2 buckets, and whether to create Cloudflare resources through Wrangler. It does not write admin passwords to tracked files.
+The scaffold prompts for the target directory, Go module path, Worker name, app URL, database mode, R2 buckets, and whether to create Cloudflare resources through Wrangler. D1 mode also prompts for D1 database names and IDs. It does not write admin passwords to tracked files.
 
 In the generated project:
 
@@ -92,14 +92,14 @@ Pocketflare runs [PocketBase] as Go WASM inside a Cloudflare Worker.
 | Component | Cloudflare primitive | Purpose |
 |---|---|---|
 | Dynamic API | Worker + Go WASM | Runs [PocketBase] routes, hooks, auth, collections, and admin APIs. |
-| App database | D1 `APP_DB` | Primary [PocketBase] data. |
-| Logs database | D1 `LOGS_DB` | [PocketBase] logs and auxiliary data. |
+| App database | D1 `APP_DB` by default, or `APP_DO` in DO SQLite mode | Primary [PocketBase] data. |
+| Logs database | D1 `LOGS_DB` by default, or `APP_DO` in DO SQLite mode | [PocketBase] logs and auxiliary data. |
 | File storage | R2 `STORAGE` | Uploaded files for [PocketBase] file fields. |
 | Backup artifacts | R2 `BACKUPS` | Stores upstream backup zip artifacts when enabled. |
 | Admin UI assets | Workers Assets `ASSETS` | Serves `admin-ui/_` without booting Go WASM. |
 | Realtime | Optional Durable Object | SSE/WebSocket bridge for [PocketBase] realtime. |
 
-Required bindings in `wrangler.toml`:
+D1 mode bindings in `wrangler.toml`:
 
 ```toml
 [[d1_databases]]
@@ -119,7 +119,35 @@ directory = "./admin-ui"
 binding = "ASSETS"
 ```
 
-`ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` without booting Go WASM. `/_pf` is the first-superuser setup route; `/_` and nested admin assets stay on Workers Assets.
+`STORAGE`, `BACKUPS`, and `ASSETS` are used in both database modes. `ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` without booting Go WASM. `/_pf` is the first-superuser setup route; `/_` and nested admin assets stay on Workers Assets.
+
+## Database Modes
+
+`d1` is the default:
+
+```toml
+[vars]
+POCKETFLARE_DB_MODE = "d1"
+```
+
+It uses `APP_DB` and `LOGS_DB` D1 bindings. Fixed write transactions are atomic through `D1Database.batch()`. Interactive read-after-write transactions are not available on D1.
+
+`do_sqlite` is opt-in:
+
+```toml
+[vars]
+POCKETFLARE_DB_MODE = "do_sqlite"
+
+[[durable_objects.bindings]]
+name = "APP_DO"
+class_name = "AppDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AppDO"]
+```
+
+In this mode all dynamic requests route through one SQLite-backed Durable Object. It is the closer match for upstream [PocketBase] transaction behavior. Tradeoffs: the app database is single-object scoped, storage limits differ from D1, and latency depends on the Durable Object location. R2 file storage is unchanged.
 
 ## File Storage
 
@@ -275,11 +303,13 @@ Realtime/SSE is optional. Without the Durable Object binding, realtime is disabl
 - One continuously active 128 MB Durable Object is about 324,000 GB-s/month. That fits inside the included Paid allowance if it is your main Durable Object use; priced as overage it would be about $4.05/month.
 - Actual realtime cost depends on connected time and event fan-out. Each connection/subscription/message delivery can add DO requests; long-lived SSE connections can keep the DO active.
 
+DO SQLite mode also uses a Durable Object. It replaces D1 request/row billing for the app database with Durable Object request, duration, and storage billing. The same duration math applies: a continuously active 128 MB object is about 324,000 GB-s/month. Most small apps will be request-driven rather than continuously active, but DO SQLite is not the cheapest default path.
+
 For a small baseline [PocketBase] app with no realtime and less than 10 GB of files, the expected Cloudflare bill is usually the **$5/month Workers Paid minimum** until product-level database scans, writes, file traffic, or realtime usage exceed included limits.
 
 ## Current Limits
 
-- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. A future optional SQLite-backed Durable Object mode is the full-compatibility path for apps that need upstream SQLite transaction semantics.
+- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. Use `POCKETFLARE_DB_MODE="do_sqlite"` for apps that need upstream SQLite transaction semantics.
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.

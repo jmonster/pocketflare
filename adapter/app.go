@@ -3,10 +3,12 @@
 package adapter
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -29,10 +31,24 @@ import (
 // Admin UI static assets are served via Cloudflare Workers Assets from
 // admin-ui/_ before WASM boot.
 func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEvent], error) {
+	dbMode := strings.ToLower(strings.TrimSpace(config.DBMode))
+	if dbMode == "" {
+		dbMode = "d1"
+	}
+
+	dbConnect := wasmdb.Connect()
+	switch dbMode {
+	case "d1":
+	case "do_sqlite":
+		dbConnect = wasmdb.ConnectDO()
+	default:
+		return nil, nil, fmt.Errorf("unsupported database mode %q", config.DBMode)
+	}
+
 	pb := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDev:     false,
 		DefaultDataDir: config.DataDir,
-		DBConnect:      wasmdb.Connect(),
+		DBConnect:      dbConnect,
 	})
 
 	// Wire R2-backed filesystem drivers before Bootstrap.
@@ -52,6 +68,12 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	}
 
 	applyNewInstallDefaults(pb, config)
+
+	// Wire the DO SQLite transaction hook before Bootstrap so migrations
+	// run inside transactionSync() when DB_MODE=do_sqlite.
+	if dbMode == "do_sqlite" {
+		setupDoSqliteMode()
+	}
 
 	if err := pb.Bootstrap(); err != nil {
 		return nil, nil, fmt.Errorf("bootstrap: %w", err)
@@ -92,11 +114,11 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	// Wire the Durable Object realtime bridge so SSE works across isolates.
 	initRealtimeDO(pb)
 
-	// D1 doesn't support SQLite PRAGMA statements. Replace the
-	// __pbDBOptimize__ cron job with a D1-safe no-op.
+	// Cloudflare storage backends do not support PocketBase's WAL checkpoint
+	// path. Replace the optimize cron with a Worker-safe no-op.
 	pb.Cron().Remove("__pbDBOptimize__")
 	pb.Cron().MustAdd("__pbDBOptimize__", "0 0 * * *", func() {
-		pb.Logger().Debug("D1 optimize skipped (D1 handles optimization automatically)")
+		pb.Logger().Debug("Pocketflare optimize skipped (Cloudflare storage handles maintenance)")
 	})
 
 	// Register global CORS middleware (same defaults as apis.Serve).
@@ -197,4 +219,39 @@ func ensureSuperuser(app *pocketbase.PocketBase, email, password string) error {
 	}
 
 	return nil
+}
+
+// setupDoSqliteMode replaces PocketBase's standard BEGIN/COMMIT/ROLLBACK
+// transaction path with ctx.storage.transactionSync(). The app callback
+// runs inside the transactionSync callback, so all SQL operations during
+// the transaction execute synchronously and atomically through
+// ctx.storage.sql.exec(). OnComplete hooks run after transactionSync returns,
+// matching PocketBase's normal post-commit/post-rollback behavior.
+func setupDoSqliteMode() {
+	core.RunInTransactionHook = func(app *core.BaseApp, db *dbx.DB, fn func(core.App) error, isForAuxDB bool) error {
+		var txApp *core.BaseApp
+		txErr := wasmdb.RunInTransactionSync(func() error {
+			tx, err := db.Begin()
+			if err != nil {
+				return err
+			}
+
+			txApp = app.CreateTxApp(tx, isForAuxDB)
+			if err := fn(txApp); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+
+			return nil
+		})
+		if txApp == nil || txApp.TxInfo() == nil {
+			return txErr
+		}
+		afterFuncErr := txApp.TxInfo().RunAfterFuncs(txErr)
+		return errors.Join(txErr, afterFuncErr)
+	}
 }

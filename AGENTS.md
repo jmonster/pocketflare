@@ -142,8 +142,8 @@ Constraints:
 - **Pending results are opaque.** `RowsAffected` and `LastInsertId` error until after commit; code that inspects these inside the transaction callback is incompatible with deferred batch commit.
 - Some upstream PocketBase paths interleave reads and writes inside `RunInTransaction` and need targeted patches (see `docs/D1-COMPATIBILITY.md` for the full matrix).
 - When a query-after-write is blocked, the driver emits a structured log line to stderr: `{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":N,"query":"..."}`. Use `wrangler tail` to identify which paths need patching.
-- For full upstream PocketBase compatibility without application rewrites, add an optional SQLite-backed Durable Object storage mode. D1 remains the default for cost and availability.
-- See `docs/do-sqlite-mode-plan.md` for the opt-in full-compatibility storage plan.
+- For upstream SQLite transaction semantics, use optional DO SQLite mode (`POCKETFLARE_DB_MODE=do_sqlite` plus `APP_DO`). D1 remains the default for cost and availability.
+- DO SQLite mode runs dynamic requests inside the `AppDO` Durable Object and uses `ctx.storage.sql` plus `ctx.storage.transactionSync()`.
 
 ## D1 Data Import (migrating from SQLite PocketBase)
 

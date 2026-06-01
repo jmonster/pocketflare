@@ -1,5 +1,6 @@
 import "./wasm_exec.js";
 import { createRuntimeContext, loadModule } from "./runtime.mjs";
+import { AppDO } from "./app-do.mjs";
 import { RealtimeDO } from "./realtime-do.mjs";
 import { registerSmtpTransport } from "./smtp-transport.mjs";
 
@@ -104,22 +105,6 @@ function runtimeStateForRequest() {
 async function fetch(req, env, ctx) {
   const fetchStart = performance.now();
   const url = new URL(req.url);
-  if (url.pathname === "/_pf" || url.pathname === "/_pf/") {
-    const runtimeState = runtimeStateForRequest();
-    const runtimeWaitStart = performance.now();
-    const binding = await getBinding(env, ctx);
-    const runtimeWaitDone = performance.now();
-    const redirectURL = await binding.installerRedirectURL(req.url) || new URL("/_/", req.url).toString();
-    return withTimingHeaders(Response.redirect(redirectURL, 302), {
-      route: "installer",
-      runtime: runtimeState,
-      bootId: runtimeMetrics?.bootId,
-      serverTiming: [
-        ["pf_total", performance.now() - fetchStart],
-        ["pf_runtime_wait", runtimeWaitDone - runtimeWaitStart],
-      ],
-    });
-  }
 
   if (url.pathname === "/_" || url.pathname.startsWith("/_/")) {
     const response = await env.ASSETS.fetch(req);
@@ -143,6 +128,53 @@ async function fetch(req, env, ctx) {
     const id = env.REALTIME_DO.idFromName("hub");
     const stub = env.REALTIME_DO.get(id);
     return stub.fetch(req);
+  }
+
+  // DO SQLite mode: route all dynamic requests (including /_pf installer)
+  // through a Durable Object that owns the Go/WASM runtime.
+  if (dbMode(env) === "do_sqlite") {
+    if (!env.APP_DO) {
+      return new Response("Pocketflare is configured for DO SQLite mode, but APP_DO is not bound.", {
+        status: 500,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+    const id = env.APP_DO.idFromName("app");
+    const stub = env.APP_DO.get(id);
+    try {
+      const response = await stub.fetch(req);
+      return withTimingHeaders(response, {
+        route: "dynamic-do",
+        serverTiming: [
+          ["pf_total", performance.now() - fetchStart],
+        ],
+      });
+    } catch (e) {
+      console.error({ message: e.message, stack: e.stack, cause: e.cause });
+      return new Response("Internal Server Error", {
+        status: 500,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+  }
+
+  // D1 mode: boot Go/WASM inline in the Worker isolate.
+
+  if (url.pathname === "/_pf" || url.pathname === "/_pf/") {
+    const runtimeState = runtimeStateForRequest();
+    const runtimeWaitStart = performance.now();
+    const binding = await getBinding(env, ctx);
+    const runtimeWaitDone = performance.now();
+    const redirectURL = await binding.installerRedirectURL(req.url) || new URL("/_/", req.url).toString();
+    return withTimingHeaders(Response.redirect(redirectURL, 302), {
+      route: "installer",
+      runtime: runtimeState,
+      bootId: runtimeMetrics?.bootId,
+      serverTiming: [
+        ["pf_total", performance.now() - fetchStart],
+        ["pf_runtime_wait", runtimeWaitDone - runtimeWaitStart],
+      ],
+    });
   }
 
   try {
@@ -221,10 +253,26 @@ function roundMs(value) {
   return Math.round(value * 100) / 100;
 }
 
+function dbMode(env) {
+  return String(env.POCKETFLARE_DB_MODE || "d1").trim().toLowerCase();
+}
+
 async function scheduled(event, env, ctx) {
+  if (dbMode(env) === "do_sqlite") {
+    if (!env.APP_DO) {
+      throw new Error("Pocketflare is configured for DO SQLite mode, but APP_DO is not bound.");
+    }
+    const id = env.APP_DO.idFromName("app");
+    const stub = env.APP_DO.get(id);
+    const req = new Request("https://do.local/_do/scheduled", {
+      method: "POST",
+      body: JSON.stringify({ cron: event.cron, scheduledTime: event.scheduledTime }),
+    });
+    return stub.fetch(req);
+  }
   const binding = await getBinding(env, ctx);
   return binding.runScheduler(event);
 }
 
-export { RealtimeDO };
+export { AppDO, RealtimeDO };
 export default { fetch, scheduled };

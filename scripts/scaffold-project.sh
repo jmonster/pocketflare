@@ -127,6 +127,7 @@ write_wrangler() {
     local logs_db_id="$7"
     local storage_bucket="$8"
     local backups_bucket="$9"
+    local db_mode="${10}"
 
     cat > "$target/wrangler.toml" <<EOF
 name = "$(toml_escape "$worker_name")"
@@ -135,6 +136,15 @@ compatibility_date = "2025-05-30"
 
 [vars]
 POCKETFLARE_APP_URL = "$(toml_escape "$app_url")"
+EOF
+
+    if [[ "$db_mode" == "do_sqlite" ]]; then
+        cat >> "$target/wrangler.toml" <<EOF
+POCKETFLARE_DB_MODE = "do_sqlite"
+EOF
+    fi
+
+    cat >> "$target/wrangler.toml" <<EOF
 
 POCKETFLARE_STORAGE_BUCKET_NAME = "$(toml_escape "$storage_bucket")"
 POCKETFLARE_BACKUPS_BUCKET_NAME = "$(toml_escape "$backups_bucket")"
@@ -151,6 +161,10 @@ POCKETFLARE_BACKUPS_BUCKET_NAME = "$(toml_escape "$backups_bucket")"
 #   pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY
 #
 # R2_ACCOUNT_ID = ""
+EOF
+
+    if [[ "$db_mode" == "d1" ]]; then
+        cat >> "$target/wrangler.toml" <<EOF
 
 [[d1_databases]]
 binding = "APP_DB"
@@ -161,6 +175,10 @@ database_id = "$(toml_escape "$app_db_id")"
 binding = "LOGS_DB"
 database_name = "$(toml_escape "$logs_db_name")"
 database_id = "$(toml_escape "$logs_db_id")"
+EOF
+    fi
+
+    cat >> "$target/wrangler.toml" <<EOF
 
 [[r2_buckets]]
 binding = "STORAGE"
@@ -173,6 +191,33 @@ bucket_name = "$(toml_escape "$backups_bucket")"
 [assets]
 directory = "./admin-ui"
 binding = "ASSETS"
+EOF
+
+    if [[ "$db_mode" == "do_sqlite" ]]; then
+        cat >> "$target/wrangler.toml" <<EOF
+
+[[durable_objects.bindings]]
+name = "APP_DO"
+class_name = "AppDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AppDO"]
+EOF
+    else
+        cat >> "$target/wrangler.toml" <<EOF
+
+# ── Optional: DO SQLite mode ───────────────────────────────────────────────
+# Uncomment this binding, add a migration with new_sqlite_classes = ["AppDO"],
+# and set POCKETFLARE_DB_MODE = "do_sqlite" to use Durable Object SQLite.
+#
+# [[durable_objects.bindings]]
+# name = "APP_DO"
+# class_name = "AppDO"
+EOF
+    fi
+
+    cat >> "$target/wrangler.toml" <<EOF
 
 # ── Cron triggers ──────────────────────────────────────────────────────────
 # Uncomment to enable scheduled tasks. PocketBase cron jobs run on the
@@ -191,27 +236,34 @@ binding = "ASSETS"
 # class_name = "RealtimeDO"
 #
 # [[migrations]]
-# tag = "v1"
+# tag = "realtime-v1"
 # new_classes = ["RealtimeDO"]
 EOF
 }
 
 create_cloudflare_resources() {
-    local app_db_name="$1"
-    local logs_db_name="$2"
-    local storage_bucket="$3"
-    local backups_bucket="$4"
+    local db_mode="$1"
+    local app_db_name="$2"
+    local logs_db_name="$3"
+    local storage_bucket="$4"
+    local backups_bucket="$5"
 
     echo "Wrangler will create remote Cloudflare resources in the account selected by your Wrangler login."
-    echo "Creates: D1 $app_db_name, D1 $logs_db_name, R2 $storage_bucket, R2 $backups_bucket."
+    if [[ "$db_mode" == "d1" ]]; then
+        echo "Creates: D1 $app_db_name, D1 $logs_db_name, R2 $storage_bucket, R2 $backups_bucket."
+    else
+        echo "Creates: R2 $storage_bucket, R2 $backups_bucket. APP_DO is created by the Worker migration."
+    fi
     echo "It will not delete or overwrite existing resources."
 
     if ! confirm "Create these resources now?" "n"; then
         return 0
     fi
 
-    pnpm exec wrangler d1 create "$app_db_name"
-    pnpm exec wrangler d1 create "$logs_db_name"
+    if [[ "$db_mode" == "d1" ]]; then
+        pnpm exec wrangler d1 create "$app_db_name"
+        pnpm exec wrangler d1 create "$logs_db_name"
+    fi
     pnpm exec wrangler r2 bucket create "$storage_bucket"
     pnpm exec wrangler r2 bucket create "$backups_bucket"
 }
@@ -219,6 +271,7 @@ create_cloudflare_resources() {
 main() {
     local target project_name default_module module worker_name subdomain default_url app_url
     local app_db_name logs_db_name storage_bucket backups_bucket app_db_id logs_db_id
+    local db_mode
 
     target="$(prompt_required "Target directory")"
     mkdir -p "$(dirname "$target")"
@@ -241,23 +294,38 @@ main() {
     else
         app_url="$(prompt_required "Application URL for new installs")"
     fi
-    app_db_name="$(prompt_required "APP_DB D1 database name" "$worker_name-app")"
-    logs_db_name="$(prompt_required "LOGS_DB D1 database name" "$worker_name-logs")"
+    db_mode="d1"
+    if confirm "Use Durable Object SQLite for the app database?" "n"; then
+        db_mode="do_sqlite"
+    fi
+
+    if [[ "$db_mode" == "d1" ]]; then
+        app_db_name="$(prompt_required "APP_DB D1 database name" "$worker_name-app")"
+        logs_db_name="$(prompt_required "LOGS_DB D1 database name" "$worker_name-logs")"
+    else
+        app_db_name=""
+        logs_db_name=""
+    fi
     storage_bucket="$(prompt_required "STORAGE R2 bucket name" "$worker_name-storage")"
     backups_bucket="$(prompt_required "BACKUPS R2 bucket name" "$worker_name-backups")"
 
-    if confirm "Run Wrangler create commands for these D1/R2 resources?" "n"; then
-        create_cloudflare_resources "$app_db_name" "$logs_db_name" "$storage_bucket" "$backups_bucket"
+    if confirm "Run Wrangler create commands for these Cloudflare resources?" "n"; then
+        create_cloudflare_resources "$db_mode" "$app_db_name" "$logs_db_name" "$storage_bucket" "$backups_bucket"
     fi
 
-    echo "Paste the database IDs from Wrangler output or from Cloudflare D1."
-    app_db_id="$(prompt_required "APP_DB database_id")"
-    logs_db_id="$(prompt_required "LOGS_DB database_id")"
+    if [[ "$db_mode" == "d1" ]]; then
+        echo "Paste the database IDs from Wrangler output or from Cloudflare D1."
+        app_db_id="$(prompt_required "APP_DB database_id")"
+        logs_db_id="$(prompt_required "LOGS_DB database_id")"
+    else
+        app_db_id=""
+        logs_db_id=""
+    fi
 
     copy_template "$target"
     replace_module_path "$target" "$module"
     replace_package_name "$target" "$project_name"
-    write_wrangler "$target" "$worker_name" "$app_url" "$app_db_name" "$app_db_id" "$logs_db_name" "$logs_db_id" "$storage_bucket" "$backups_bucket"
+    write_wrangler "$target" "$worker_name" "$app_url" "$app_db_name" "$app_db_id" "$logs_db_name" "$logs_db_id" "$storage_bucket" "$backups_bucket" "$db_mode"
 
     echo ""
     echo "Created Pocketflare project: $target"

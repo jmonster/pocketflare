@@ -79,14 +79,12 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 
 ## DO SQLite: Full-Compatibility Path
 
-For upstream SQLite semantics without rewriting apps, an optional SQLite-backed Durable Object storage mode (`DurableObjectSqliteStorage`) is the full-compatibility option:
+For upstream SQLite semantics without rewriting apps, use the optional SQLite-backed Durable Object mode:
 
 - Provides callback-scoped SQLite transactions with read-your-writes semantics
-- Enables all upstream PocketBase features without patches
+- Reduces the need for D1-specific transaction patches
 - Tradeoff: app database moves from D1 to a Durable Object with different latency, cost, storage limit, and scaling characteristics
 - D1 remains the default (cheap, high-availability, HTTP-accessible)
-- DO SQLite would be a configuration mode, not a replacement
+- DO SQLite is a configuration mode, not a replacement
 
-This is not part of the current D1 batch implementation.
-
-Implementation plan: `docs/do-sqlite-mode-plan.md`.
+Enable it with `POCKETFLARE_DB_MODE=do_sqlite` and an `APP_DO` binding using `new_sqlite_classes = ["AppDO"]`. See `docs/do-sqlite-migration.md`.

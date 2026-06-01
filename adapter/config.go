@@ -4,10 +4,15 @@ import "github.com/pocketbase/pocketbase/core"
 
 // Config defines the configuration for creating a PocketBase app.
 type Config struct {
-	AdminEmail          string
-	AdminPassword       string
-	AppURL              string
-	DataDir             string // usually "/tmp/pb_data"; NOT persisted on Workers (ephemeral)
+	AdminEmail    string
+	AdminPassword string
+	AppURL        string
+	DataDir       string // usually "/tmp/pb_data"; NOT persisted on Workers (ephemeral)
+
+	// DBMode selects the database backend:
+	//   "d1" (default) — D1 for cheapest/fastest global reads
+	//   "do_sqlite"    — Durable Object SQLite for PocketBase transaction fidelity
+	DBMode string
 
 	// MailProvider selects the mail transport:
 	//   "resend"|"postmark"|"sendgrid"|"mailgun"|"smtp"|"webhook"|""

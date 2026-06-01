@@ -13,6 +13,7 @@ import (
 
 func init() {
 	dbx.BuilderFuncMap["d1pocketflare"] = dbx.NewSqliteBuilder
+	dbx.BuilderFuncMap["dopocketflare"] = dbx.NewSqliteBuilder
 }
 
 // Connect returns a core.DBConnectFunc that routes PocketBase db paths
@@ -27,5 +28,17 @@ func Connect() core.DBConnectFunc {
 			binding = "LOGS_DB"
 		}
 		return dbx.Open("d1pocketflare", binding)
+	}
+}
+
+// ConnectDO returns a core.DBConnectFunc for DO SQLite mode.
+// All database paths open through the "dopocketflare" driver backed
+// by ctx.storage.sql. The DO owns a single SQLite database per object,
+// so binding-based routing is not needed — all paths resolve to the
+// same SQLite instance via ctx.storage.
+func ConnectDO() core.DBConnectFunc {
+	return func(dbPath string) (*dbx.DB, error) {
+		_ = dbPath
+		return dbx.Open("dopocketflare", "do-sqlite")
 	}
 }

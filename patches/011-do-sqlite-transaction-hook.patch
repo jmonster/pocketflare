@@ -1,0 +1,65 @@
+diff --git a/core/db_tx.go b/core/db_tx.go
+index 3f08228..9c07a40 100644
+--- a/core/db_tx.go
++++ b/core/db_tx.go
+@@ -22,21 +22,33 @@ func (app *BaseApp) AuxRunInTransaction(fn func(txApp App) error) error {
+ 	return app.runInTransaction(app.AuxNonconcurrentDB(), fn, true)
+ }
+ 
++// RunInTransactionHook is set by adapter packages that need to replace the
++// standard BEGIN/COMMIT/ROLLBACK transaction flow with a platform-specific
++// equivalent. When non-nil, runInTransaction delegates to this hook instead
++// of calling dbx.DB.Transactional. Used by the DO SQLite driver to wrap
++// the transaction callback in ctx.storage.transactionSync().
++var RunInTransactionHook func(app *BaseApp, db *dbx.DB, fn func(txApp App) error, isForAuxDB bool) error
++
+ func (app *BaseApp) runInTransaction(db dbx.Builder, fn func(txApp App) error, isForAuxDB bool) error {
+ 	switch txOrDB := db.(type) {
+ 	case *dbx.Tx:
+ 		// run as part of the already existing transaction
+ 		return fn(app)
+ 	case *dbx.DB:
++		// Platform-specific transaction hook (e.g. DO SQLite's transactionSync).
++		if RunInTransactionHook != nil {
++			return RunInTransactionHook(app, txOrDB, fn, isForAuxDB)
++		}
++
+ 		var txApp *BaseApp
+ 		txErr := txOrDB.Transactional(func(tx *dbx.Tx) error {
+-			txApp = app.createTxApp(tx, isForAuxDB)
++			txApp = app.CreateTxApp(tx, isForAuxDB)
+ 			return fn(txApp)
+ 		})
+ 
+ 		// execute all after event calls on transaction complete
+ 		if txApp != nil && txApp.txInfo != nil {
+-			afterFuncErr := txApp.txInfo.runAfterFuncs(txErr)
++			afterFuncErr := txApp.txInfo.RunAfterFuncs(txErr)
+ 			if afterFuncErr != nil {
+ 				return errors.Join(txErr, afterFuncErr)
+ 			}
+@@ -48,8 +60,10 @@ func (app *BaseApp) runInTransaction(db dbx.Builder, fn func(txApp App) error, i
+ 	}
+ }
+ 
+-// createTxApp shallow clones the current app and assigns a new tx state.
+-func (app *BaseApp) createTxApp(tx *dbx.Tx, isForAuxDB bool) *BaseApp {
++// CreateTxApp shallow clones the current app and assigns a new tx state.
++// Exported for adapter transaction hooks that need to construct a tx app
++// outside the standard dbx.Transactional path.
++func (app *BaseApp) CreateTxApp(tx *dbx.Tx, isForAuxDB bool) *BaseApp {
+ 	clone := *app
+ 
+ 	if isForAuxDB {
+@@ -89,8 +103,9 @@ func (a *TxAppInfo) OnComplete(fn func(txErr error) error) {
+ 	a.afterFuncs = append(a.afterFuncs, fn)
+ }
+ 
+-// note: can be called only once because TxAppInfo is cleared
+-func (a *TxAppInfo) runAfterFuncs(txErr error) error {
++// RunAfterFuncs invokes all registered OnComplete callbacks.
++// Can be called only once because TxAppInfo is cleared afterward.
++func (a *TxAppInfo) RunAfterFuncs(txErr error) error {
+ 	a.mu.Lock()
+ 	defer a.mu.Unlock()
+ 

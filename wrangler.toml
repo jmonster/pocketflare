@@ -4,6 +4,7 @@ compatibility_date = "2025-05-30"
 
 [vars]
 POCKETFLARE_APP_URL = "https://pocketflare.garage.workers.dev"
+# POCKETFLARE_DB_MODE = "d1" # default; set to "do_sqlite" for Durable Object SQLite mode
 
 # Optional: enable server-side R2 CopyObject.
 # When unset, file copies stream through the Worker with bounded memory.
@@ -42,6 +43,14 @@ binding = "ASSETS"
 [triggers]
 crons = ["* * * * *"]
 
+# ── Optional: DO SQLite mode ────────────────────────────────────────────
+# Uncomment to run PocketBase inside a Durable Object backed by SQLite
+# storage. Required when POCKETFLARE_DB_MODE = "do_sqlite".
+#
+# [[durable_objects.bindings]]
+# name = "APP_DO"
+# class_name = "AppDO"
+#
 # ── Optional: realtime/SSE via Durable Objects ─────────────────────────
 # Uncomment to enable cross-isolate SSE. Without this, GET /api/realtime
 # falls through to Go where SSE is non-functional on Workers (the WASM
@@ -53,4 +62,5 @@ crons = ["* * * * *"]
 #
 # [[migrations]]
 # tag = "v1"
+# new_sqlite_classes = ["AppDO"]
 # new_classes = ["RealtimeDO"]
