@@ -14,6 +14,7 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 | Auth register/login/refresh | Reads precede writes within tx callback |
 | File upload/download | R2-backed; no D1 transaction involvement |
 | Collection rename (name-only) | ALTER TABLE RENAME + UPDATE _collections |
+| PocketBase migrations | Run statement-by-statement without an outer D1 transaction so legacy migrations can read their own writes |
 
 ### Supported with safe failure
 
@@ -28,6 +29,7 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 |---|---|
 | Collection delete with view resave | `checkViewDependencies` scans view queries outside tx (substring heuristic); `resaveViewsWithChangedFields` runs before DROP TABLE within tx |
 | View collection save/update | Precompute fields and normalized query before entering write tx |
+| Collection metadata updates | Precompute old table existence before saving `_collections`, avoiding schema checks after queued writes |
 | Cascade deletes (single-level) | Cascade before main delete; collect all related records across all fields before writes |
 | Raw SQL route (`/api/sql`) | Split multi-statement SQL by `;`, reject mixed read/write |
 
@@ -66,6 +68,8 @@ PocketBase RunInTransaction(fn)
   → d1Tx.Commit()           // D1Database.batch([...queued statements])
   → d1Tx.Rollback()         // drops queue, no persistence
 ```
+
+PocketBase migrations are the exception in D1 mode. Pocketflare disables the migration runner's outer transaction for D1 because older upstream migrations interleave writes and reads. Those migrations still use the same D1 driver for individual statements.
 
 ## Diagnostics
 

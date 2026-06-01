@@ -141,6 +141,7 @@ Constraints:
 - **Reads before writes are not isolated.** A `QueryContext` before any queued write executes directly against D1 but is not transactionally isolated with the later batch.
 - **Pending results are opaque.** `RowsAffected` and `LastInsertId` error until after commit; code that inspects these inside the transaction callback is incompatible with deferred batch commit.
 - Some upstream PocketBase paths interleave reads and writes inside `RunInTransaction` and need targeted patches (see `docs/D1-COMPATIBILITY.md` for the full matrix).
+- D1 mode sets `core.RunMigrationsWithoutTransaction = true` before `Bootstrap()`. PocketBase migrations run statement-by-statement on D1 because older upstream migrations read their own writes.
 - When a query-after-write is blocked, the driver emits a structured log line to stderr: `{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":N,"query":"..."}`. Use `wrangler tail` to identify which paths need patching.
 - For upstream SQLite transaction semantics, use optional DO SQLite mode (`POCKETFLARE_DB_MODE=do_sqlite` plus `APP_DO`). D1 remains the default for cost and availability.
 - DO SQLite mode runs dynamic requests inside the `AppDO` Durable Object and uses `ctx.storage.sql` plus `ctx.storage.transactionSync()`.
@@ -162,7 +163,7 @@ When importing an existing PocketBase database into D1:
 6. Patch `_params/settings` with target environment values
 7. Import `_logs` to LOGS_DB
 
-The `_migrations` table from an older PocketBase version has entries that the current version's migration runner may not match exactly. Importing it causes the runner to re-apply migrations against existing tables, which fails on D1 because the init migration uses `CREATE TABLE` without `IF NOT EXISTS`. Bootstrapping clean avoids this entirely.
+The `_migrations` table from an older PocketBase version has entries that the current version's migration runner may not match exactly. Bootstrapping clean avoids replaying old system migrations against already-imported system tables.
 
 **Password hashes are portable.** PocketBase uses standard `$2a$10$` bcrypt. Hashes from any PocketBase version work in any other. The auth token signing key is generated fresh during bootstrap — existing JWT tokens are invalidated, but users can log in again with their same password. Superusers should be created fresh via `POCKETFLARE_ADMIN_EMAIL`/`POCKETFLARE_ADMIN_PASSWORD` env vars or the `/_pf` installer flow.
 

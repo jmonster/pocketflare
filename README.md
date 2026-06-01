@@ -131,6 +131,7 @@ POCKETFLARE_DB_MODE = "d1"
 ```
 
 It uses `APP_DB` and `LOGS_DB` D1 bindings. Fixed write transactions are atomic through `D1Database.batch()`. Interactive read-after-write transactions are not available on D1.
+PocketBase migrations run without an outer transaction on D1 because older upstream migrations read their own writes.
 
 `do_sqlite` is opt-in:
 
@@ -338,6 +339,7 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 ## Current Limits
 
 - D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. Use `POCKETFLARE_DB_MODE="do_sqlite"` for apps that need upstream SQLite transaction semantics.
+- D1 migrations are statement-by-statement instead of wrapped in one outer transaction. This lets upstream PocketBase migrations run on D1, but a failed migration can leave partial schema/data changes; retry on a fresh target or use DO SQLite when migration rollback semantics matter.
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
 - R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.

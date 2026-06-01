@@ -180,7 +180,7 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 
 ## Known Limits
 
-- **D1 transactions:** Pocketflare maps fixed write transactions to `D1Database.batch()`, which executes statements sequentially as a SQL transaction and rolls back the entire sequence on failure. Reads after queued writes fail deterministically before any partial persistence. Reads before writes are direct (non-isolated). See `docs/D1-COMPATIBILITY.md` for the full feature matrix.
+- **D1 transactions:** Pocketflare maps fixed write transactions to `D1Database.batch()`, which executes statements sequentially as a SQL transaction and rolls back the entire sequence on failure. Reads after queued writes fail deterministically before any partial persistence. Reads before writes are direct (non-isolated). D1 migrations run statement-by-statement because older PocketBase migrations read their own writes. See `docs/D1-COMPATIBILITY.md` for the full feature matrix.
 - **DO SQLite mode:** `POCKETFLARE_DB_MODE=do_sqlite` routes dynamic requests through `APP_DO`, a SQLite-backed Durable Object. This provides callback-scoped transactions with read-your-writes semantics. Tradeoff: the app database moves from D1 to a single Durable Object with different latency, cost, storage limit, and scaling characteristics.
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are possible app-level optimizations, not required for PocketBase API compatibility.
 - R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured. The Worker relay fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
