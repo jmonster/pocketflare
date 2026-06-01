@@ -115,6 +115,7 @@ async function main() {
   const start = await api.post("/api/pocketflare/restore/start", {});
   const sessionId = start.sessionId;
   const fileUploadToken = start.fileUploadToken;
+  api.setRestoreToken(fileUploadToken);
 
   // ── Phase 4: Import database ──
   const SQL = await initSqlJs();
@@ -351,11 +352,14 @@ async function uploadFile(workerURL, fileUploadToken, key, data) {
 // ── API helpers ──
 
 function makeAPI(baseURL, token) {
+  let restoreToken = "";
+
   async function request(method, path, body) {
     const opts = {
       method,
       headers: {
         "Authorization": token,
+        ...(restoreToken ? { "X-Pocketflare-Restore-Token": restoreToken } : {}),
         "Content-Type": "application/json",
       },
     };
@@ -377,6 +381,7 @@ function makeAPI(baseURL, token) {
   return {
     get: (path) => request("GET", path),
     post: (path, body) => request("POST", path, body),
+    setRestoreToken: (value) => { restoreToken = value || ""; },
   };
 }
 

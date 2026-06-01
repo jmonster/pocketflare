@@ -10435,6 +10435,12 @@ index 0000000..a2be3d9
 +        totalFiles: 0,
 +    });
 +
++    function restoreHeaders() {
++        return data.fileUploadToken
++            ? { "Content-Type": "application/json", "X-Pocketflare-Restore-Token": data.fileUploadToken }
++            : { "Content-Type": "application/json" };
++    }
++
 +    checkStatus();
 +
 +    async function checkStatus() {
@@ -10442,7 +10448,10 @@ index 0000000..a2be3d9
 +        try {
 +            const resp = await app.pb.send("/api/pocketflare/restore/status", { method: "GET" });
 +            data.dbMode = resp.dbMode;
-+            if (resp.activeRestore) data.activeRestore = resp.activeRestore;
++            if (resp.activeRestore) {
++                data.activeRestore = resp.activeRestore;
++                data.fileUploadToken = resp.activeRestore.fileUploadToken;
++            }
 +            if (resp.empty) {
 +                data.phase = "ready";
 +            } else {
@@ -10536,7 +10545,7 @@ index 0000000..a2be3d9
 +            await app.pb.send("/api/pocketflare/restore/phase", {
 +                method: "POST",
 +                body: JSON.stringify({ sessionId, phase: "files" }),
-+                headers: { "Content-Type": "application/json" },
++                headers: restoreHeaders(),
 +            });
 +        } catch (err) {
 +            if (!err.isAbort) {
@@ -10568,7 +10577,7 @@ index 0000000..a2be3d9
 +            await app.pb.send("/api/pocketflare/restore/finalize", {
 +                method: "POST",
 +                body: JSON.stringify({ sessionId }),
-+                headers: { "Content-Type": "application/json" },
++                headers: restoreHeaders(),
 +            });
 +        } catch (err) {
 +            if (!err.isAbort) {
@@ -10742,7 +10751,7 @@ index 0000000..a2be3d9
 +        const resp = await app.pb.send("/api/pocketflare/restore/database", {
 +            method: "POST",
 +            body: JSON.stringify({ sessionId, db, statements }),
-+            headers: { "Content-Type": "application/json" },
++            headers: restoreHeaders(),
 +        });
 +        if (!resp.ok) throw new Error("Database batch failed");
 +        return resp;

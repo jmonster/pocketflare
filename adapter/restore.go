@@ -43,10 +43,32 @@ func registerPocketflareRestoreRoutes(app core.App, rg *router.RouterGroup[*core
 	sub := rg.Group("/pocketflare/restore")
 	sub.GET("/status", restoreStatus(dbMode)).Bind(apis.RequireSuperuserAuth())
 	sub.POST("/start", restoreStart(dbMode)).Bind(apis.RequireSuperuserAuth())
-	sub.POST("/database", restoreDatabase(dbMode)).Bind(apis.RequireSuperuserAuth())
-	sub.POST("/phase", restorePhase).Bind(apis.RequireSuperuserAuth())
-	sub.POST("/cancel", restoreCancel).Bind(apis.RequireSuperuserAuth())
-	sub.POST("/finalize", restoreFinalize(dbMode)).Bind(apis.RequireSuperuserAuth())
+	// Restore-session routes must not inherit PocketBase auth middleware once the
+	// system auth tables have been cleared by the restore.
+	sub.POST("/database", restoreDatabase(dbMode)).Unbind(
+		apis.DefaultRequireAuthMiddlewareId,
+		apis.DefaultRequireSuperuserAuthMiddlewareId,
+		apis.DefaultRequireSuperuserOrOwnerAuthMiddlewareId,
+		apis.DefaultRequireSameCollectionContextAuthMiddlewareId,
+	)
+	sub.POST("/phase", restorePhase).Unbind(
+		apis.DefaultRequireAuthMiddlewareId,
+		apis.DefaultRequireSuperuserAuthMiddlewareId,
+		apis.DefaultRequireSuperuserOrOwnerAuthMiddlewareId,
+		apis.DefaultRequireSameCollectionContextAuthMiddlewareId,
+	)
+	sub.POST("/cancel", restoreCancel).Unbind(
+		apis.DefaultRequireAuthMiddlewareId,
+		apis.DefaultRequireSuperuserAuthMiddlewareId,
+		apis.DefaultRequireSuperuserOrOwnerAuthMiddlewareId,
+		apis.DefaultRequireSameCollectionContextAuthMiddlewareId,
+	)
+	sub.POST("/finalize", restoreFinalize(dbMode)).Unbind(
+		apis.DefaultRequireAuthMiddlewareId,
+		apis.DefaultRequireSuperuserAuthMiddlewareId,
+		apis.DefaultRequireSuperuserOrOwnerAuthMiddlewareId,
+		apis.DefaultRequireSameCollectionContextAuthMiddlewareId,
+	)
 }
 
 // ── GET /api/pocketflare/restore/status ──────────────────────────────────
@@ -154,9 +176,9 @@ func restorePhase(e *core.RequestEvent) error {
 		return e.BadRequestError("phase must be 'files'", nil)
 	}
 
-	marker, err := readRestoreMarker()
-	if err != nil || marker == nil {
-		return e.BadRequestError("no active restore session", err)
+	marker, err := requireRestoreToken(e)
+	if err != nil {
+		return err
 	}
 	if marker.SessionID != body.SessionID {
 		return e.BadRequestError("session mismatch", nil)
@@ -184,9 +206,9 @@ func restoreCancel(e *core.RequestEvent) error {
 		return e.BadRequestError("invalid request body", err)
 	}
 
-	marker, err := readRestoreMarker()
-	if err != nil || marker == nil {
-		return e.BadRequestError("no active restore session", err)
+	marker, err := requireRestoreToken(e)
+	if err != nil {
+		return err
 	}
 	if marker.SessionID != body.SessionID {
 		return e.BadRequestError("session mismatch", nil)
@@ -200,7 +222,7 @@ func restoreCancel(e *core.RequestEvent) error {
 	}
 	// Must still be in database phase (before files).
 	if marker.Phase != "database" {
-		return e.BadRequestError("cannot cancel in phase: " + marker.Phase, nil)
+		return e.BadRequestError("cannot cancel in phase: "+marker.Phase, nil)
 	}
 
 	if err := deleteRestoreMarker(); err != nil {
@@ -241,9 +263,9 @@ func restoreDatabase(dbMode string) func(*core.RequestEvent) error {
 			return e.BadRequestError("db must be 'app' or 'logs'", nil)
 		}
 
-		marker, err := readRestoreMarker()
-		if err != nil || marker == nil {
-			return e.BadRequestError("no active restore session", err)
+		marker, err := requireRestoreToken(e)
+		if err != nil {
+			return err
 		}
 		if marker.SessionID != body.SessionID {
 			return e.BadRequestError("session mismatch", nil)
@@ -266,6 +288,14 @@ func executeRestoreStatements(e *core.RequestEvent, body *restoreDatabaseRequest
 	// recorded that progress was made. This blocks unsafe /cancel.
 	marker.DBProgress.BatchesDone++
 	if err := writeRestoreMarker(marker); err != nil {
+		e.App.Logger().Error(
+			"restore: failed to write progress marker before batch",
+			"sessionId", marker.SessionID,
+			"phase", marker.Phase,
+			"db", body.DB,
+			"batchesDone", marker.DBProgress.BatchesDone,
+			"error", err.Error(),
+		)
 		return e.InternalServerError("failed to write progress marker before batch", err)
 	}
 
@@ -349,9 +379,9 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 			return e.BadRequestError("missing sessionId", nil)
 		}
 
-		marker, err := readRestoreMarker()
-		if err != nil || marker == nil {
-			return e.BadRequestError("no active restore session", err)
+		marker, err := requireRestoreToken(e)
+		if err != nil {
+			return err
 		}
 		if marker.SessionID != body.SessionID {
 			return e.BadRequestError("session mismatch", nil)
@@ -381,6 +411,23 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 			Note: "Current session may be invalid. Log in with restored superuser credentials.",
 		})
 	}
+}
+
+func requireRestoreToken(e *core.RequestEvent) (*RestoreMarker, error) {
+	marker, err := readRestoreMarker()
+	if err != nil {
+		return nil, e.InternalServerError("failed to read restore marker", err)
+	}
+	if marker == nil {
+		return nil, e.BadRequestError("no active restore session", nil)
+	}
+
+	token := e.Request.Header.Get("X-Pocketflare-Restore-Token")
+	if token == "" || token != marker.FileUploadToken {
+		return nil, e.UnauthorizedError("The request requires a valid restore session token.", nil)
+	}
+
+	return marker, nil
 }
 
 // ── Param binding ────────────────────────────────────────────────────────
