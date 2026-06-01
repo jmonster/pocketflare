@@ -36,6 +36,12 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		dbMode = "d1"
 	}
 
+	restoreMarker, err := readRestoreMarker()
+	if err != nil {
+		return nil, nil, fmt.Errorf("restore marker: %w", err)
+	}
+	restoreOnly := restoreMarker != nil
+
 	dbConnect := wasmdb.Connect()
 	switch dbMode {
 	case "d1":
@@ -49,6 +55,8 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		DefaultDev:     false,
 		DefaultDataDir: config.DataDir,
 		DBConnect:      dbConnect,
+		// Keep bootstrap shallow when resuming an active restore.
+		SkipSystemMigrations: restoreOnly,
 	})
 
 	// Wire R2-backed filesystem drivers before Bootstrap.
@@ -85,17 +93,21 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 
 	registerMailer(pb, config)
 
-	// Inject user-defined Go migrations before running all migrations.
-	core.AppMigrations.Copy(config.AppMigrations)
+	if !restoreOnly {
+		// Normal boot runs migrations and provisions the configured headless
+		// superuser. Restore resumes skip both so the restore session can finish.
+		// Inject user-defined Go migrations before running all migrations.
+		core.AppMigrations.Copy(config.AppMigrations)
 
-	if err := pb.RunAllMigrations(); err != nil {
-		return nil, nil, fmt.Errorf("migrations: %w", err)
-	}
+		if err := pb.RunAllMigrations(); err != nil {
+			return nil, nil, fmt.Errorf("migrations: %w", err)
+		}
 
-	// Create initial superuser if configured.
-	if config.AdminEmail != "" && config.AdminPassword != "" {
-		if err := ensureSuperuser(pb, config.AdminEmail, config.AdminPassword); err != nil {
-			return nil, nil, fmt.Errorf("superuser: %w", err)
+		// Create initial superuser if configured.
+		if config.AdminEmail != "" && config.AdminPassword != "" {
+			if err := ensureSuperuser(pb, config.AdminEmail, config.AdminPassword); err != nil {
+				return nil, nil, fmt.Errorf("superuser: %w", err)
+			}
 		}
 	}
 	registerInstallerBinding(pb)

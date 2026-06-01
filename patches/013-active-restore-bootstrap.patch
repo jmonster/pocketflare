@@ -1,0 +1,68 @@
+diff --git a/pocketbase.go b/pocketbase.go
+index 91b92c8..f7d6488 100644
+--- a/pocketbase.go
++++ b/pocketbase.go
+@@ -60,6 +60,9 @@ type Config struct {
+ 	AuxMaxOpenConns  int                // default to core.DefaultAuxMaxOpenConns
+ 	AuxMaxIdleConns  int                // default to core.DefaultAuxMaxIdleConns
+ 	DBConnect        core.DBConnectFunc // default to core.dbConnect
++
++	// SkipSystemMigrations keeps Bootstrap from applying core migrations.
++	SkipSystemMigrations bool
+ }
+ 
+ // New creates a new PocketBase instance with the default configuration.
+@@ -126,15 +129,16 @@ func NewWithConfig(config Config) *PocketBase {
+ 
+ 	// initialize the app instance
+ 	pb.App = core.NewBaseApp(core.BaseAppConfig{
+-		IsDev:            pb.devFlag,
+-		DataDir:          pb.dataDirFlag,
+-		EncryptionEnv:    pb.encryptionEnvFlag,
+-		QueryTimeout:     time.Duration(pb.queryTimeout) * time.Second,
+-		DataMaxOpenConns: config.DataMaxOpenConns,
+-		DataMaxIdleConns: config.DataMaxIdleConns,
+-		AuxMaxOpenConns:  config.AuxMaxOpenConns,
+-		AuxMaxIdleConns:  config.AuxMaxIdleConns,
+-		DBConnect:        config.DBConnect,
++		IsDev:                pb.devFlag,
++		DataDir:              pb.dataDirFlag,
++		EncryptionEnv:        pb.encryptionEnvFlag,
++		QueryTimeout:         time.Duration(pb.queryTimeout) * time.Second,
++		DataMaxOpenConns:     config.DataMaxOpenConns,
++		DataMaxIdleConns:     config.DataMaxIdleConns,
++		AuxMaxOpenConns:      config.AuxMaxOpenConns,
++		AuxMaxIdleConns:      config.AuxMaxIdleConns,
++		DBConnect:            config.DBConnect,
++		SkipSystemMigrations: config.SkipSystemMigrations,
+ 	})
+ 
+ 	// hide the default help command (allow only `--help` flag)
+diff --git a/core/base.go b/core/base.go
+index d1ca96c..2a5d662 100644
+--- a/core/base.go
++++ b/core/base.go
+@@ -65,6 +65,10 @@ type BaseAppConfig struct {
+ 	AuxMaxOpenConns  int
+ 	AuxMaxIdleConns  int
+ 	IsDev            bool
++	// SkipSystemMigrations keeps Bootstrap from applying schema migrations.
++	// Pocketflare uses this while resuming an active restore against a
++	// half-restored database.
++	SkipSystemMigrations bool
+ }
+ 
+ // ensures that the BaseApp implements the App interface.
+@@ -414,8 +418,10 @@ func (app *BaseApp) Bootstrap() error {
+ 			return err
+ 		}
+ 
+-		if err := app.RunSystemMigrations(); err != nil {
+-			return err
++		if !app.config.SkipSystemMigrations {
++			if err := app.RunSystemMigrations(); err != nil {
++				return err
++			}
+ 		}
+ 
+ 		if err := app.ReloadCachedCollections(); err != nil {
