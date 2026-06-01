@@ -111,6 +111,9 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		},
 	})
 
+	// Wire Pocketflare-specific routes.
+	registerPocketflareRestoreRoutes(pb, pbRouter.Group("/api"), dbMode)
+
 	// Wire the Durable Object realtime bridge so SSE works across isolates.
 	initRealtimeDO(pb)
 

@@ -117,6 +117,12 @@ async function fetch(req, env, ctx) {
     });
   }
 
+  // Restore file upload: stream directly to R2 without buffering in Go/WASM.
+  // Validates the restore session token and storage key before writing.
+  if (url.pathname === "/api/pocketflare/restore/files" && (req.method === "PUT" || req.method === "POST")) {
+    return handleRestoreFileUpload(req, env, fetchStart);
+  }
+
   // Realtime SSE connections live in a Durable Object so they can hold
   // connections open beyond the Worker fetch timeout and fan out across
   // isolates. Only GET (connection) is intercepted; POST (subscriptions)
@@ -255,6 +261,104 @@ function roundMs(value) {
 
 function dbMode(env) {
   return String(env.POCKETFLARE_DB_MODE || "d1").trim().toLowerCase();
+}
+
+// ── Restore file upload ─────────────────────────────────────────────────
+
+const RESTORE_MARKER_KEY = "pocketflare-restore/active.json";
+
+// PocketBase storage key shape: storage/<collectionId>/<recordId>/<filename>
+// or storage/<collectionId>/<recordId>/thumbs_<filename>/<thumbSize>_<filename>
+const STORAGE_KEY_RE = /^storage\/[A-Za-z0-9_]+\/[A-Za-z0-9_]+\/(thumbs_[^/]+\/[^/]+|[^/]+)$/;
+
+function validateStorageKey(key) {
+  if (!STORAGE_KEY_RE.test(key)) return false;
+  // Reject path traversal and empty segments.
+  if (key.includes("..") || key.includes("\\")) return false;
+  if (key.split("/").some(s => s === "")) return false;
+  return true;
+}
+
+async function handleRestoreFileUpload(req, env, fetchStart) {
+  const fileKey = req.headers.get("X-Pocketflare-File-Key");
+  const restoreToken = req.headers.get("X-Pocketflare-Restore-Token");
+
+  if (!fileKey || !restoreToken) {
+    return new Response(
+      JSON.stringify({ error: "missing X-Pocketflare-File-Key or X-Pocketflare-Restore-Token header" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // Strict key validation: no traversal, no unexpected paths.
+  if (!validateStorageKey(fileKey)) {
+    return new Response(
+      JSON.stringify({ error: "invalid storage key: " + fileKey }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // Validate restore session.
+  let marker;
+  try {
+    const markerObj = await env.STORAGE.get(RESTORE_MARKER_KEY);
+    if (!markerObj) {
+      return new Response(
+        JSON.stringify({ error: "no active restore session" }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    marker = await markerObj.json();
+  } catch {
+    return new Response(
+      JSON.stringify({ error: "failed to read restore marker" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  if (!marker || marker.fileUploadToken !== restoreToken) {
+    return new Response(
+      JSON.stringify({ error: "invalid restore token" }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  if (marker.phase !== "files") {
+    return new Response(
+      JSON.stringify({ error: "restore not accepting file uploads (phase: " + marker.phase + ")" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  // Stream body directly to R2.
+  const contentType = req.headers.get("X-Pocketflare-File-Content-Type") || req.headers.get("Content-Type") || undefined;
+  const putOpts = {};
+  if (contentType) {
+    putOpts.httpMetadata = { contentType };
+  }
+
+  try {
+    await env.STORAGE.put(fileKey, req.body, putOpts);
+  } catch (e) {
+    console.error({ family: "pocketflare-restore", phase: "file-upload-error", key: fileKey, message: e.message });
+    return new Response(
+      JSON.stringify({ error: "failed to upload file to R2", key: fileKey }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  return withTimingHeaders(
+    new Response(JSON.stringify({ ok: true, key: fileKey }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }),
+    {
+      route: "restore-file",
+      serverTiming: [
+        ["pf_total", performance.now() - fetchStart],
+      ],
+    },
+  );
 }
 
 async function scheduled(event, env, ctx) {
