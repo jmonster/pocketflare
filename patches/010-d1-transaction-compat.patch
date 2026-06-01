@@ -172,10 +172,10 @@ index fff6241..c7368b9 100644
  			}
  
 diff --git a/core/collection_query.go b/core/collection_query.go
-index b19bb55..be5f3fd 100644
+index b19bb55..e84564a 100644
 --- a/core/collection_query.go
 +++ b/core/collection_query.go
-@@ -334,58 +334,114 @@ func normalizeViewQueryId(app App, query string) (string, error) {
+@@ -334,58 +334,112 @@ func normalizeViewQueryId(app App, query string) (string, error) {
  	return query, nil
  }
  

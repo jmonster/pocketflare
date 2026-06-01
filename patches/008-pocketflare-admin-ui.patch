@@ -3,14 +3,14 @@ index b4591df..39e2d77 100644
 --- a/core/settings_model.go
 +++ b/core/settings_model.go
 @@ -147,7 +147,7 @@ func newDefaultSettings() *Settings {
- 			isNew: true,
- 			settings: settings{
- 				Meta: MetaConfig{
--					AccentColor:   "#1055c9",
-+					AccentColor:   "#404041",
- 					AppName:       "Acme",
- 					AppURL:        "http://localhost:8090",
- 					HideControls:  false,
+ 		isNew: true,
+ 		settings: settings{
+ 			Meta: MetaConfig{
+-				AccentColor:   "#1055c9",
++				AccentColor:   "#404041",
+ 				AppName:       "Acme",
+ 				AppURL:        "http://localhost:8090",
+ 				HideControls:  false,
 diff --git a/ui/src/base/credits.js b/ui/src/base/credits.js
 index 01fea3f..70b4b5b 100644
 --- a/ui/src/base/credits.js
@@ -3562,3 +3562,4 @@ o`_u8OufEC$IgRTVZ2wo~A547r@WOpYkpKVy07*qoM6N<$g1xg%qyPW_
 
 literal 0
 HcmV?d00001
+
