@@ -7,6 +7,7 @@ set -euo pipefail
 BASE="${1:-https://pocketflare.garage.workers.dev}"
 ADMIN_EMAIL="${POCKETFLARE_ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${POCKETFLARE_ADMIN_PASSWORD:-}"
+E2E_DB_MODE="${POCKETFLARE_E2E_DB_MODE:-}"
 PASS=0
 FAIL=0
 
@@ -36,7 +37,21 @@ fi
 
 # ── 1. Health ──
 echo "── 1. Health ──"
-assert "health returns 200" '[ "$(curl -sS --max-time 60 "$BASE/api/health" | json .code)" = "200" ]'
+HEALTH_HEADERS="$(mktemp)"
+HEALTH_BODY="$(mktemp)"
+curl -sS --max-time 60 -D "$HEALTH_HEADERS" -o "$HEALTH_BODY" "$BASE/api/health"
+HEALTH_CODE="$(json .code < "$HEALTH_BODY")"
+PF_ROUTE="$(awk -F': *' 'tolower($1)=="x-pocketflare-route" { gsub(/\r/, "", $2); print $2 }' "$HEALTH_HEADERS" | tail -n 1)"
+rm -f "$HEALTH_HEADERS" "$HEALTH_BODY"
+if [[ -z "$E2E_DB_MODE" ]]; then
+    if [[ "$PF_ROUTE" == "dynamic-do" ]]; then
+        E2E_DB_MODE="do_sqlite"
+    else
+        E2E_DB_MODE="d1"
+    fi
+fi
+echo "database mode: $E2E_DB_MODE"
+assert "health returns 200" '[ "$HEALTH_CODE" = "200" ]'
 
 # ── 2. Admin auth ──
 echo "── 2. Admin auth ──"
@@ -251,9 +266,9 @@ BATCH_FAIL_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/batch" \
         {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:""}}
     ]}')")
 BATCH_FAIL_STATUS=$(echo "$BATCH_FAIL_RESP" | json .status)
-BATCH_FAIL_DATA=$(echo "$BATCH_FAIL_RESP" | json '.data.requests')
+BATCH_FAIL_DATA=$(echo "$BATCH_FAIL_RESP" | json '.data.requests // empty')
 assert "failed batch returns 400 status" '[ "$BATCH_FAIL_STATUS" = "400" ]'
-assert "failed batch includes batch_request_failed" 'echo "$BATCH_FAIL_DATA" | grep -q batch_request_failed'
+assert "failed batch includes batch_request_failed" 'grep -q batch_request_failed <<< "$BATCH_FAIL_DATA"'
 
 BATCH_FAIL_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
     -H "Authorization: Bearer $TOKEN" | json .totalItems)
@@ -281,7 +296,7 @@ for rid in $(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/record
         -H "Authorization: Bearer $TOKEN" >/dev/null
 done
 
-# Test 3: query-after-write in batch must fail safely
+# Test 3: query-after-write behavior depends on database mode.
 # Create a record first (outside batch) so PATCH has an ID to query for.
 PRE_RECORD_ID=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/$BATCH_COLL_ID/records" \
     -H "Authorization: Bearer $TOKEN" \
@@ -289,28 +304,50 @@ PRE_RECORD_ID=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/$BATCH_COL
     -d '{"title":"pre-existing"}' | json .id)
 assert "pre-existing record created" '[ -n "$PRE_RECORD_ID" ]'
 
-# Batch: write first, then query. The PATCH handler calls FindRecordById
-# which is a read after a queued write — must fail deterministically.
-QAW_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/batch" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -n --arg cid "$BATCH_COLL_ID" --arg rid "$PRE_RECORD_ID" '{requests:[
-        {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"queued-write"}},
-        {method:"PATCH",url:("/api/collections/"+$cid+"/records/"+$rid),body:{title:"should-fail"}}
-    ]}')")
-QAW_STATUS=$(echo "$QAW_RESP" | json .status)
-QAW_DATA=$(echo "$QAW_RESP" | json '.data.requests')
-assert "query-after-write batch returns 400" '[ "$QAW_STATUS" = "400" ]'
-assert "query-after-write includes batch_request_failed" 'echo "$QAW_DATA" | grep -q batch_request_failed'
+QAW_BODY="$(jq -n --arg cid "$BATCH_COLL_ID" --arg rid "$PRE_RECORD_ID" '{requests:[
+    {method:"POST",url:("/api/collections/"+$cid+"/records"),body:{title:"queued-write"}},
+    {method:"PATCH",url:("/api/collections/"+$cid+"/records/"+$rid),body:{title:"patched-after-write"}}
+]}')"
 
-QAW_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
-    -H "Authorization: Bearer $TOKEN" | json .totalItems)
-# Only the pre-existing record remains; the batch was fully rolled back.
-assert "query-after-write leaves only pre-existing record (1)" '[ "$QAW_COUNT" = "1" ]'
+if [[ "$E2E_DB_MODE" == "do_sqlite" ]]; then
+    QAW_HTTP=$(curl -sS --max-time 30 -o /tmp/pocketflare-qaw-ok.json -w "%{http_code}" -X POST "$BASE/api/batch" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$QAW_BODY")
+    assert "query-after-write batch succeeds in DO SQLite" '[ "$QAW_HTTP" = "200" ]'
 
-# Clean up the pre-existing record
-curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$BATCH_COLL_ID/records/$PRE_RECORD_ID" \
-    -H "Authorization: Bearer $TOKEN" >/dev/null
+    QAW_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+        -H "Authorization: Bearer $TOKEN" | json .totalItems)
+    assert "query-after-write persists both DO SQLite records" '[ "$QAW_COUNT" = "2" ]'
+
+    QAW_TITLE=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records/$PRE_RECORD_ID" \
+        -H "Authorization: Bearer $TOKEN" | json .title)
+    assert "query-after-write patches pre-existing DO SQLite record" '[ "$QAW_TITLE" = "patched-after-write" ]'
+
+    for rid in $(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+        -H "Authorization: Bearer $TOKEN" | json '.items[].id'); do
+        curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$BATCH_COLL_ID/records/$rid" \
+            -H "Authorization: Bearer $TOKEN" >/dev/null
+    done
+else
+    # D1 batches are atomic fixed write groups. The PATCH handler reads after
+    # a queued POST, so D1 mode must fail before partial persistence.
+    QAW_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/batch" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$QAW_BODY")
+    QAW_STATUS=$(echo "$QAW_RESP" | json .status)
+    QAW_DATA=$(echo "$QAW_RESP" | json '.data.requests // empty')
+    assert "query-after-write batch returns 400 in D1" '[ "$QAW_STATUS" = "400" ]'
+    assert "query-after-write includes batch_request_failed in D1" 'grep -q batch_request_failed <<< "$QAW_DATA"'
+
+    QAW_COUNT=$(curl -sS --max-time 30 "$BASE/api/collections/$BATCH_COLL_ID/records" \
+        -H "Authorization: Bearer $TOKEN" | json .totalItems)
+    assert "query-after-write leaves only pre-existing D1 record" '[ "$QAW_COUNT" = "1" ]'
+
+    curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$BATCH_COLL_ID/records/$PRE_RECORD_ID" \
+        -H "Authorization: Bearer $TOKEN" >/dev/null
+fi
 
 # ── 9. Sequential retry (verifies instance stability, not cold start) ──
 echo "── 9. Sequential retry ──"
@@ -328,6 +365,7 @@ for id in "$TEST_COLL_ID" "$AUTH_COLL_ID" "$FILE_COLL_ID" "$BATCH_COLL_ID"; do
         -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
 done
 rm -f /tmp/pocketflare-e2e-test.txt
+rm -f /tmp/pocketflare-batch-ok.json /tmp/pocketflare-qaw-ok.json
 
 # ── Report ──
 echo ""

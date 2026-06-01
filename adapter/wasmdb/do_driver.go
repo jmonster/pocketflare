@@ -100,7 +100,7 @@ func (s *doStmt) Query([]driver.Value) (driver.Rows, error) {
 }
 
 // ExecContext calls sql.exec() synchronously. No Promise involved.
-func (s *doStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+func (s *doStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (result driver.Result, err error) {
 	s.conn.mu.Lock()
 	tx := s.conn.tx
 	done := tx != nil && tx.done
@@ -110,13 +110,16 @@ func (s *doStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (dri
 		return nil, errors.New("dopocketflare: transaction already completed")
 	}
 
-	jsArgs, err := namedValuesToJS(args)
-	if err != nil {
-		return nil, err
+	jsArgs, jErr := namedValuesToJS(args)
+	if jErr != nil {
+		return nil, jErr
 	}
 
 	execArgs := append([]any{s.query}, jsArgs...)
-	cursor := storageAPI().Get("sql").Call("exec", execArgs...)
+	cursor, execErr := doSQLExec(execArgs)
+	if execErr != nil {
+		return nil, execErr
+	}
 	return &doResult{
 		rowsWritten: cursor.Get("rowsWritten").Int(),
 	}, nil
@@ -125,7 +128,7 @@ func (s *doStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (dri
 // QueryContext calls sql.exec() synchronously.
 // Read-your-writes works inside a transactionSync() callback because
 // all sql.exec() calls run in the same transaction synchronously.
-func (s *doStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+func (s *doStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (rows driver.Rows, err error) {
 	s.conn.mu.Lock()
 	tx := s.conn.tx
 	done := tx != nil && tx.done
@@ -135,13 +138,16 @@ func (s *doStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (dr
 		return nil, errors.New("dopocketflare: transaction already completed")
 	}
 
-	jsArgs, err := namedValuesToJS(args)
-	if err != nil {
-		return nil, err
+	jsArgs, jErr := namedValuesToJS(args)
+	if jErr != nil {
+		return nil, jErr
 	}
 
 	execArgs := append([]any{s.query}, jsArgs...)
-	cursor := storageAPI().Get("sql").Call("exec", execArgs...)
+	cursor, execErr := doSQLExec(execArgs)
+	if execErr != nil {
+		return nil, execErr
+	}
 
 	colsArray := cursor.Get("columnNames")
 	if colsArray.Get("toArray").Type() == js.TypeFunction {
@@ -245,6 +251,24 @@ func (r *doRows) Next(dest []driver.Value) error {
 }
 
 // ── storage API access ────────────────────────────────────────────────────
+
+// doSQLExec calls ctx.storage.sql.exec() and recovers from JS exceptions
+// (e.g. UNIQUE constraint violations, which throw in JS). JS errors are
+// converted to Go errors so PocketBase can handle them gracefully (e.g.
+// returning a 400 for duplicate email instead of a 500 panic).
+func doSQLExec(args []any) (cursor js.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if jsErr, ok := r.(js.Error); ok {
+				err = errors.New(jsErr.Get("message").String())
+				return
+			}
+			panic(r)
+		}
+	}()
+	cursor = storageAPI().Get("sql").Call("exec", args...)
+	return cursor, nil
+}
 
 func storageAPI() js.Value {
 	ctx := js.Global().Get("context").Get("ctx")

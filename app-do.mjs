@@ -55,7 +55,14 @@ export class AppDO {
 
     let response;
     try {
-      response = await binding.handleRequest(req);
+      if (url.pathname === "/_pf" || url.pathname === "/_pf/") {
+        const redirectURL =
+          (await binding.installerRedirectURL(req.url)) ||
+          new URL("/_/", req.url).toString();
+        response = Response.redirect(redirectURL, 302);
+      } else {
+        response = await binding.handleRequest(req);
+      }
     } catch (e) {
       console.error({ message: e.message, stack: e.stack, cause: e.cause });
       return new Response("Internal Server Error", {
