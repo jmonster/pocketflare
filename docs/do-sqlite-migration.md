@@ -26,7 +26,25 @@ D1 and DO SQLite schemas are compatible — both use SQLite DDL. Timestamp and J
 
 ### Standalone PocketBase (SQLite) → DO SQLite mode
 
-PocketBase's SQLite `.db` file is compatible with DO SQLite's SQL engine. Migration path:
+PocketBase's SQLite `.db` file is compatible with DO SQLite's SQL engine. Two migration paths are available:
+
+**Option A: Backup zip restore (recommended)**
+
+1. Create a PocketBase backup:
+   ```sh
+   pocketbase backup create
+   ```
+
+2. Deploy a new Pocketflare app with `POCKETFLARE_DB_MODE = "do_sqlite"`.
+
+3. Restore the backup zip from the admin UI (Settings → Backups) or CLI:
+   ```sh
+   node scripts/restore-backup.mjs https://<worker-domain> backup.zip --token <superuser-token>
+   ```
+
+This imports schema, data, settings, superusers, and local `storage/` files in a single flow.
+
+**Option B: Manual collection import**
 
 1. Export the PocketBase database:
    ```sh

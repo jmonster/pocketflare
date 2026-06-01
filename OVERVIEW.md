@@ -65,7 +65,7 @@ A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives Po
 
 `STORAGE` and `BACKUPS` are used directly by the patched WASM filesystem path. Users do not need to enable PocketBase's S3 file-storage feature for normal file fields.
 
-PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives local `pb_data`, while Pocketflare stores app data in D1 and file fields in R2. Use D1 Time Travel/export for database backup and copy/snapshot `STORAGE` separately for uploaded files. Backup restore is unsupported on Workers.
+Pocketflare does not build a new backup system. Use Cloudflare-native primitives for ongoing backups: D1 Time Travel/export, DO SQLite PITR, and R2 bucket backup/copy. PocketBase backup zips can be restored/imported into an empty Pocketflare target from the admin UI or CLI as a migration path from standalone PocketBase.
 
 `ASSETS` is not an R2 bucket. It is a Workers Assets binding. Matching static assets can be served by Cloudflare without invoking Worker code.
 
@@ -187,7 +187,7 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
 - SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
-- PocketBase backups are not complete Pocketflare backups. Use D1 Time Travel/export plus a separate R2 file backup plan.
+- PocketBase upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native primitives (D1 Time Travel/export, DO SQLite PITR, R2 backup/copy) for production backups. PocketBase backup zips can be restored into empty Pocketflare targets for migration.
 
 ## References
 

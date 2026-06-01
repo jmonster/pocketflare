@@ -149,6 +149,17 @@ new_sqlite_classes = ["AppDO"]
 
 In this mode all dynamic requests route through one SQLite-backed Durable Object. It is the closer match for upstream [PocketBase] transaction behavior. Tradeoffs: the app database is single-object scoped, storage limits differ from D1, and latency depends on the Durable Object location. R2 file storage is unchanged.
 
+| | D1 (default) | DO SQLite |
+|---|---|---|
+| **Transactions** | Fixed write batches via `D1Database.batch()`; no interactive read-after-write | Upstream SQLite semantics with write transactions |
+| **Backup/Restore** | D1 Time Travel + export; restore via Pocketflare backup zip import | DO SQLite PITR; restore via Pocketflare backup zip import |
+| **Storage limit** | Higher (scales with D1 plan) | 1 GB Free / 10 GB Paid per DO |
+| **Latency** | Global read replicas (reads are fast everywhere) | Single-location DO; latency varies by client proximity |
+| **Cost** | Cheapest default | DO request + duration + storage billing |
+| **Migration from D1** | N/A | Not a config flip; requires backup zip restore or data export/import |
+
+Existing D1 apps do not switch to DO SQLite by flipping env vars; they require migration/import.
+
 ## File Storage
 
 In the Workers build, Pocketflare injects an R2 filesystem adapter and ignores the upstream local/S3 filesystem path for file storage.
@@ -165,20 +176,37 @@ Terminology:
 
 With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. Large-copy fallback still needs runtime proof.
 
-## Backups
+## Backups and Restore
 
-Use Cloudflare D1 Time Travel or D1 export for database backups, not [PocketBase]'s upstream backup system.
+### Cloudflare-Native Backups
 
-[PocketBase] backups archive the local `pb_data` directory. Pocketflare app data lives in D1 and uploaded files live in R2. Upstream [PocketBase] backup zips are not complete Pocketflare application backups.
+Pocketflare does not build a new backup system. Ongoing backups use Cloudflare-native primitives:
 
-If [PocketBase] backup creation or auto backups are enabled, the zip is stored through `BACKUPS`. Backup restore is unsupported on Workers.
+- **D1:** D1 Time Travel for point-in-time restore, D1 export for backup retention beyond the Time Travel window.
+- **DO SQLite:** Durable Object SQLite point-in-time recovery.
+- **R2:** Bucket backup/copy policy for the `STORAGE` bucket.
 
-For production:
+[PocketBase]'s upstream backup system (create, auto backup, backup S3 settings) is not the ongoing backup strategy for Pocketflare. The `BACKUPS` R2 bucket stores upstream backup zip artifacts when backup creation is enabled, but these are not complete Pocketflare application backups.
 
-- Use D1 Time Travel for point-in-time database restore.
-- Export D1 to durable storage when you need backup retention beyond D1 Time Travel's window.
-- Back up or copy the `STORAGE` R2 bucket separately for uploaded files.
-- Leave [PocketBase] backup S3 settings disabled.
+### Restoring from a PocketBase Backup
+
+Pocketflare can restore/import a [PocketBase] backup zip into an empty Pocketflare target. This is the primary migration path from a standalone [PocketBase] app.
+
+**Important:**
+- Restore is destructive — it replaces all data in the target.
+- Restore only runs against an empty/bootstrap-only Pocketflare target (no non-system collections, no objects under R2 `storage/` prefix, no active restore).
+- Restored superuser credentials may replace the current admin session. Log in with restored credentials after finalize.
+- [PocketBase] backup zips include local `storage/` files but not external S3 file objects. If the source app used S3 storage, copy the source bucket's `storage/` prefix into Pocketflare's R2 `STORAGE` bucket separately.
+
+**Admin UI restore (recommended for small/medium backups):**
+Navigate to Settings → Backups, upload the `.zip` backup file. The restore page shows progress through target check, database import, file upload, and finalize phases.
+
+**CLI restore (recommended for large backups):**
+```sh
+node scripts/restore-backup.mjs https://<worker-domain> backup.zip --token <superuser-token>
+```
+
+The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase.
 
 ## Email
 
@@ -317,7 +345,7 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 - [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker.
 - SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
-- [PocketBase] backups are not complete Pocketflare backups. Use D1 Time Travel/export plus a separate R2 file backup plan.
+- [PocketBase] upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native backup primitives for production backups. Pocketflare supports restoring [PocketBase] backup zips into empty targets for migration.
 
 ## Cloudflare Limits
 

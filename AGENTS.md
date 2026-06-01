@@ -69,7 +69,7 @@ Normal new-project admin setup should use Pocketflare's `/_pf` route, which redi
 
 That adapter covers PocketBase-managed file fields and PocketBase filesystem calls. It is not a general writable POSIX filesystem for custom Go code. Direct `os.*`, fsnotify, subprocess, and raw socket assumptions need Worker-compatible replacements.
 
-PocketBase backups are not complete Pocketflare backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but it should not be treated as restorable production data. Use D1 Time Travel/export for database backup and copy/snapshot the `STORAGE` R2 bucket separately for uploaded files. Backup restore is unsupported on Workers.
+PocketBase backups are not complete Pocketflare production backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 or DO SQLite and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but ongoing production backups should use Cloudflare-native primitives: D1 Time Travel/export, DO SQLite PITR, and separate `STORAGE` R2 bucket backup/copy. PocketBase backup zips can be restored into an empty Pocketflare target from the admin UI or `scripts/restore-backup.mjs` as a migration path from standalone PocketBase.
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 

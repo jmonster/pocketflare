@@ -86,11 +86,13 @@ Runtime terms:
 
 S3 `CopyObject` is only an optimization for runtime filesystem Copy. With optional R2 API credentials, Pocketflare asks R2 to copy the object server-side. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker. Large-copy fallback still needs runtime proof.
 
-## Backups
+## Backups and Restore
 
 Pocketflare has a separate R2 `BACKUPS` bucket. Existing PocketBase backup archives are optional migration data. If you need them, copy backup zip files into the `BACKUPS` bucket with their original file names.
 
-Backup create/list/upload use R2. Backup restore is unsupported while the upstream restore path still checks PocketBase backup S3 settings.
+**Backup zip restore** (admin UI Settings → Backups, or CLI `scripts/restore-backup.mjs`) imports the database and local `storage/` files from a PocketBase backup zip into an empty Pocketflare target. This is the recommended migration path from standalone PocketBase.
+
+**Existing S3-backed files** are not included in PocketBase backup zips. Copy your source S3 bucket's `storage/` prefix into Pocketflare's R2 `STORAGE` bucket separately using `rclone`, `aws s3 sync`, or another S3-compatible tool. See the [Existing S3-Compatible Storage](#existing-s3-compatible-storage) section above for details.
 
 ## Verification
 
