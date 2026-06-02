@@ -39,6 +39,47 @@ assert() {
     fi
 }
 
+sse_record_stat() {
+    local stream_file="$1"
+    local record_id="$2"
+    local stat="$3"
+
+    node - "$stream_file" "$record_id" "$stat" <<'NODE'
+const fs = require("fs");
+
+const [file, recordId, stat] = process.argv.slice(2);
+const text = fs.readFileSync(file, "utf8");
+const events = [];
+
+for (const frame of text.split(/\n\n+/)) {
+  const data = frame
+    .split(/\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("\n");
+  if (!data) continue;
+  try {
+    const parsed = JSON.parse(data);
+    if (parsed?.record?.id === recordId) events.push(parsed);
+  } catch {}
+}
+
+if (stat === "count") {
+  console.log(events.length);
+} else if (stat === "hasCreateTitle") {
+  console.log(events.some((event) => event.action === "create" && event.record?.title === "realtime-proof-alpha") ? "true" : "false");
+} else if (stat === "hasUpdateTitle") {
+  console.log(events.some((event) => event.action === "update" && event.record?.title === "realtime-proof-beta") ? "true" : "false");
+} else if (stat === "hasUpdateCount") {
+  console.log(events.some((event) => event.action === "update" && event.record?.count === 99) ? "true" : "false");
+} else if (stat === "hasDeleteAction") {
+  console.log(events.some((event) => event.action === "delete") ? "true" : "false");
+} else {
+  process.exit(2);
+}
+NODE
+}
+
 cleanup() {
     if [[ -n "${SSE_PID:-}" ]]; then
         kill "$SSE_PID" 2>/dev/null || true
@@ -227,7 +268,7 @@ assert "record created" '[ -n "$RECORD_ID" ]'
 # Allow bridge delivery and SSE write (bridge → DO /__send → poll → SSE stream).
 sleep 2
 
-CREATE_EVENTS=$(grep -c "\"id\":\"$RECORD_ID\"" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
+CREATE_EVENTS=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" count)
 assert "exactly 1 SSE event for this record after create" '[ "$CREATE_EVENTS" -eq 1 ]'
 
 # ── 11. Update record → assert RECORD_UPDATE ──
@@ -241,7 +282,7 @@ assert "record updated (HTTP 200)" '[ "$UPDATE_HTTP" = "200" ]'
 
 sleep 2
 
-UPDATE_EVENTS=$(grep -c "\"id\":\"$RECORD_ID\"" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
+UPDATE_EVENTS=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" count)
 assert "exactly 2 SSE events for this record after update" '[ "$UPDATE_EVENTS" -eq 2 ]'
 
 # ── 12. Delete record → assert RECORD_DELETE ──
@@ -253,27 +294,27 @@ assert "record deleted (HTTP 204)" '[ "$DELETE_HTTP" = "204" ]'
 
 sleep 2
 
-DELETE_EVENTS=$(grep -c "\"id\":\"$RECORD_ID\"" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
+DELETE_EVENTS=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" count)
 assert "exactly 3 SSE events for this record after delete" '[ "$DELETE_EVENTS" -eq 3 ]'
 
 # ── 13. Verify event payloads are authoritative ──
 echo "── 13. Verifying event payloads ──"
 
 # Create event must contain the record id and submitted fields.
-CREATE_DATA_OK=$(grep "realtime-proof-alpha" "$ARTIFACT_DIR/sse-stream.txt" || true)
-assert "RECORD_CREATE payload contains submitted title" '[ -n "$CREATE_DATA_OK" ]'
-CREATE_HAS_ID=$(grep "$RECORD_ID" "$ARTIFACT_DIR/sse-stream.txt" || true)
-assert "RECORD_CREATE payload contains record id" '[ -n "$CREATE_HAS_ID" ]'
+CREATE_DATA_OK=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" hasCreateTitle)
+assert "RECORD_CREATE payload contains submitted title" '[ "$CREATE_DATA_OK" = "true" ]'
+CREATE_HAS_ID=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" count)
+assert "RECORD_CREATE payload contains record id" '[ "$CREATE_HAS_ID" -ge 1 ]'
 
 # Update event must contain the updated fields.
-UPDATE_DATA_OK=$(grep "realtime-proof-beta" "$ARTIFACT_DIR/sse-stream.txt" || true)
-assert "RECORD_UPDATE payload contains updated title" '[ -n "$UPDATE_DATA_OK" ]'
-UPDATE_HAS_COUNT=$(grep '"count":99' "$ARTIFACT_DIR/sse-stream.txt" || true)
-assert "RECORD_UPDATE payload contains updated count" '[ -n "$UPDATE_HAS_COUNT" ]'
+UPDATE_DATA_OK=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" hasUpdateTitle)
+assert "RECORD_UPDATE payload contains updated title" '[ "$UPDATE_DATA_OK" = "true" ]'
+UPDATE_HAS_COUNT=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" hasUpdateCount)
+assert "RECORD_UPDATE payload contains updated count" '[ "$UPDATE_HAS_COUNT" = "true" ]'
 
 # Delete event must carry the correct action.
-DELETE_ACTION_OK=$(grep '"action":"delete"' "$ARTIFACT_DIR/sse-stream.txt" || true)
-assert "RECORD_DELETE payload action is delete" '[ -n "$DELETE_ACTION_OK" ]'
+DELETE_ACTION_OK=$(sse_record_stat "$ARTIFACT_DIR/sse-stream.txt" "$RECORD_ID" hasDeleteAction)
+assert "RECORD_DELETE payload action is delete" '[ "$DELETE_ACTION_OK" = "true" ]'
 
 # ── 14. Clean up test collection ──
 echo "── 14. Cleaning up ──"
