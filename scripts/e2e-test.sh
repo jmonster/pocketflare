@@ -349,8 +349,46 @@ else
         -H "Authorization: Bearer $TOKEN" >/dev/null
 fi
 
-# ── 9. Sequential retry (verifies instance stability, not cold start) ──
-echo "── 9. Sequential retry ──"
+# ── 9. Multi/single field flip (exercises normalizeSingleVsMultipleFieldChanges) ──
+echo "── 9. Multi/single field flip ──"
+
+FLIP_COLL=$(curl -sS --max-time 30 -X POST "$BASE/api/collections" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"e2e_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":5,"maxSize":5242880}}]}')
+FLIP_COLL_ID=$(echo "$FLIP_COLL" | json .id)
+assert "create collection with multi-valued file field" '[ -n "$FLIP_COLL_ID" ]'
+
+# Flip docs field from multi (maxSelect=5) to single (maxSelect=1).
+# This triggers normalizeSingleVsMultipleFieldChanges which drops/recreates
+# views while converting the JSON array column to a scalar column.
+# With the fix in patch 014, view definitions are pre-fetched outside the
+# write transaction so D1 batch mode does not hit query-after-write.
+FLIP_PATCH_BODY="$(jq -n '{name:"e2e_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":1,"maxSize":5242880}}]}')"
+FLIP_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$FLIP_PATCH_BODY")
+assert "flip multi to single field succeeds (200)" '[ "$FLIP_HTTP" = "200" ]'
+
+FLIP_READ_NAME=$(curl -sS --max-time 30 "$BASE/api/collections/$FLIP_COLL_ID" \
+    -H "Authorization: Bearer $TOKEN" | json .name)
+assert "collection readable after field flip" '[ "$FLIP_READ_NAME" = "e2e_flip_test" ]'
+
+# Now flip back from single to multi to exercise the reverse path.
+FLIP_BACK_BODY="$(jq -n '{name:"e2e_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":5,"maxSize":5242880}}]}')"
+FLIP_BACK_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$FLIP_BACK_BODY")
+assert "flip single to multi field succeeds (200)" '[ "$FLIP_BACK_HTTP" = "200" ]'
+
+# Cleanup
+curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$FLIP_COLL_ID" \
+    -H "Authorization: Bearer $TOKEN" >/dev/null
+
+# ── 10. Sequential retry (verifies instance stability, not cold start) ──
+echo "── 10. Sequential retry ──"
 PASSES=0
 for i in $(seq 1 3); do
     CODE=$(curl -sS --max-time 90 "$BASE/api/health" | json .code)

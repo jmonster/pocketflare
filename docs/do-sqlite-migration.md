@@ -17,12 +17,7 @@ The app database is a fresh SQLite database inside the Durable Object. No data m
 
 D1 and DO SQLite are separate storage backends with no automatic migration. D1 uses Cloudflare's distributed query engine; DO SQLite is a single-instance SQLite database owned by a Durable Object.
 
-**Migration is not supported in the first version.** If you need PocketBase transaction semantics, deploy a new app with `POCKETFLARE_DB_MODE = "do_sqlite"` and migrate data manually:
-
-1. Export collections from the D1 app (PocketBase JSON export or D1 SQL dump)
-2. Import into the new DO SQLite app (PocketBase collection import API)
-
-D1 and DO SQLite schemas are compatible — both use SQLite DDL. Timestamp and JSON column behavior may differ; test before switching traffic.
+**Migration between modes is not supported.** There is no tool, script, or API that converts a D1-backed Pocketflare app to DO SQLite mode or vice versa. The storage engines, transaction models, and deployment topologies are fundamentally different. If you need the other mode, deploy a new app with the desired `POCKETFLARE_DB_MODE` and migrate data via PocketBase's collection import/export API or backup zip restore. D1 and DO SQLite schemas are compatible — both use SQLite DDL — but timestamp and JSON column behavior may differ; test before switching traffic.
 
 ### Standalone PocketBase (SQLite) → DO SQLite mode
 
@@ -76,6 +71,8 @@ This imports schema, data, settings, superusers, and local `storage/` files in a
 - [ ] Realtime subscriptions work (if enabled)
 - [ ] Mail delivery works (SMTP or HTTP provider)
 - [ ] Admin UI loads and collections are editable
+
+Automated checks: `scripts/doctor.mjs` verifies health, DB connectivity, admin assets, and bundle size against a deployed Worker. `scripts/proof-restore-cli.sh` exercises the full backup-zip restore path end-to-end against a local `wrangler dev` Worker.
 
 ## Storage Limits
 

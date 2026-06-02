@@ -268,10 +268,139 @@ create_cloudflare_resources() {
     pnpm exec wrangler r2 bucket create "$backups_bucket"
 }
 
+validate_scaffold() {
+    local mode="${1:-d1}"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    trap "rm -rf '$tmpdir'" EXIT
+
+    echo "=== Scaffold validation: $mode mode ==="
+    local fails=0
+
+    # Generate a scaffold project with canned answers.
+    local project_name="validate-pocketflare"
+    local module="example.com/validate-pocketflare"
+    local storage_bucket="validate-pocketflare-storage"
+    local backups_bucket="validate-pocketflare-backups"
+
+    (
+        cd "$ROOT"
+        git ls-files -z
+    ) | while IFS= read -r -d '' file; do
+        case "$file" in
+            testapp/*|TODO.md) continue ;;
+        esac
+        mkdir -p "$tmpdir/$(dirname "$file")"
+        cp -p "$ROOT/$file" "$tmpdir/$file"
+    done
+
+    # Write wrangler.toml for the given mode.
+    if [[ "$mode" == "do_sqlite" ]]; then
+        write_wrangler "$tmpdir" "$project_name" "https://validate.workers.dev" "" "" "" "" "$storage_bucket" "$backups_bucket" "do_sqlite"
+    else
+        write_wrangler "$tmpdir" "$project_name" "https://validate.workers.dev" "validate-app" "00000000-0000-0000-0000-000000000001" "validate-logs" "00000000-0000-0000-0000-000000000002" "$storage_bucket" "$backups_bucket" "d1"
+    fi
+
+    # ── Validation 1: wrangler.toml parses ──
+    echo -n "  wrangler.toml parse: "
+    if python3 -c "import tomllib; tomllib.load(open('$tmpdir/wrangler.toml','rb'))" 2>/dev/null; then
+        echo "PASS"
+    elif python3 -c "import toml; toml.load('$tmpdir/wrangler.toml')" 2>/dev/null; then
+        echo "PASS (toml)"
+    elif command -v toml-test &>/dev/null && toml-test "$tmpdir/wrangler.toml" 2>/dev/null; then
+        echo "PASS (toml-test)"
+    else
+        # Fallback: check basic TOML structure.
+        if grep -q '^name = ' "$tmpdir/wrangler.toml" && grep -q '^main = ' "$tmpdir/wrangler.toml"; then
+            echo "PASS (basic structure check)"
+        else
+            echo "FAIL (no TOML parser available; structure check failed)"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    # ── Validation 2: DB mode is correct ──
+    echo -n "  DB mode ($mode): "
+    if [[ "$mode" == "d1" ]]; then
+        if grep -q '\[\[d1_databases\]\]' "$tmpdir/wrangler.toml" && \
+           grep -q 'binding = "APP_DB"' "$tmpdir/wrangler.toml" && \
+           grep -q 'binding = "LOGS_DB"' "$tmpdir/wrangler.toml"; then
+            echo "PASS (D1 bindings present)"
+        else
+            echo "FAIL (missing D1 bindings)"
+            fails=$((fails + 1))
+        fi
+    else
+        if grep -q '\[\[durable_objects.bindings\]\]' "$tmpdir/wrangler.toml" && \
+           grep -q 'name = "APP_DO"' "$tmpdir/wrangler.toml" && \
+           grep -q 'new_sqlite_classes = \["AppDO"\]' "$tmpdir/wrangler.toml" && \
+           grep -q 'POCKETFLARE_DB_MODE = "do_sqlite"' "$tmpdir/wrangler.toml"; then
+            echo "PASS (DO SQLite bindings present)"
+        else
+            echo "FAIL (missing DO SQLite bindings)"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    # ── Validation 3: Required sections exist ──
+    echo -n "  required sections: "
+    local missing=""
+    grep -q '\[\[r2_buckets\]\]' "$tmpdir/wrangler.toml" || missing="$missing R2"
+    grep -q 'binding = "STORAGE"' "$tmpdir/wrangler.toml" || missing="$missing STORAGE"
+    grep -q 'binding = "BACKUPS"' "$tmpdir/wrangler.toml" || missing="$missing BACKUPS"
+    grep -q '\[assets\]' "$tmpdir/wrangler.toml" || missing="$missing assets"
+    grep -q 'binding = "ASSETS"' "$tmpdir/wrangler.toml" || missing="$missing ASSETS"
+
+    if [[ -z "$missing" ]]; then
+        echo "PASS"
+    else
+        echo "FAIL (missing:$missing)"
+        fails=$((fails + 1))
+    fi
+
+    # ── Validation 4: Next-step hint is appropriate ──
+    echo -n "  next-step hint: "
+    if [[ "$mode" == "do_sqlite" ]]; then
+        if grep -q "APP_DO\|DO SQLite\|new_sqlite_classes" "$tmpdir/wrangler.toml"; then
+            echo "PASS (DO SQLite guidance present)"
+        else
+            echo "FAIL (no DO SQLite guidance)"
+            fails=$((fails + 1))
+        fi
+    else
+        # D1 is the default; POCKETFLARE_DB_MODE should NOT be set to do_sqlite.
+        # Exclude comment lines (#) from the active-setting check.
+        if grep -v '^#' "$tmpdir/wrangler.toml" | grep -q 'POCKETFLARE_DB_MODE = "do_sqlite"'; then
+            echo "FAIL (do_sqlite set in D1 mode)"
+            fails=$((fails + 1))
+        elif grep -q "DO SQLite\|new_sqlite_classes\|APP_DO" "$tmpdir/wrangler.toml"; then
+            echo "PASS (DO SQLite guidance present as comment)"
+        else
+            echo "FAIL (missing DO SQLite migration guidance)"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    echo ""
+    if [[ "$fails" -eq 0 ]]; then
+        echo "Scaffold validation ($mode): PASS"
+    else
+        echo "Scaffold validation ($mode): $fails FAILURE(S)"
+        exit 1
+    fi
+}
+
 main() {
     local target project_name default_module module worker_name subdomain default_url app_url
     local app_db_name logs_db_name storage_bucket backups_bucket app_db_id logs_db_id
     local db_mode
+
+    # ── Non-interactive validation mode ──
+    if [[ "${1:-}" == "--validate" ]]; then
+        shift
+        validate_scaffold "${1:-d1}"
+        return
+    fi
 
     target="$(prompt_required "Target directory")"
     mkdir -p "$(dirname "$target")"

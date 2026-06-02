@@ -232,21 +232,24 @@ index e84564a..521e931 100644
  
  	err := app.CollectionQuery().
 diff --git a/core/collection_record_table_sync.go b/core/collection_record_table_sync.go
-index 3ce9255..894572a 100644
+index 3ce9255..b004504 100644
 --- a/core/collection_record_table_sync.go
 +++ b/core/collection_record_table_sync.go
-@@ -166,6 +166,21 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
- 		return nil // view or not an update
+@@ -32,6 +32,24 @@ func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollecti
+ 		}
  	}
  
-+	// Fetch current view definitions outside the write transaction so that
-+	// D1 batch mode does not hit query-after-write.
-+	type viewDef struct {
-+		Name string `db:"name"`
-+		SQL  string `db:"sql"`
-+	}
++	// Pre-fetch view definitions outside the write transaction so that
++	// D1 batch mode does not hit query-after-write. When called from
++	// inside an outer transaction (e.g. onCollectionSaveExecute after
++	// e.Next() has queued a write), route the SELECT through the parent
++	// (non-transactional) app.
 +	views := []viewDef{}
-+	if err := app.DB().Select("name", "sql").
++	viewApp := app
++	if info := app.TxInfo(); info != nil && info.parent != nil {
++		viewApp = info.parent
++	}
++	if err := viewApp.DB().Select("name", "sql").
 +		From("sqlite_master").
 +		AndWhere(dbx.NewExp("sql is not null")).
 +		AndWhere(dbx.HashExp{"type": "view"}).
@@ -254,10 +257,33 @@ index 3ce9255..894572a 100644
 +		return err
 +	}
 +
- 	return app.RunInTransaction(func(txApp App) error {
- 		for _, newField := range newCollection.Fields {
- 			// allow to continue even if there is no old field for the cases
-@@ -192,21 +207,8 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
+ 	txErr := app.RunInTransaction(func(txApp App) error {
+ 		// create
+ 		// -----------------------------------------------------------
+@@ -137,7 +155,7 @@ func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollecti
+ 			}
+ 		}
+ 
+-		if err := normalizeSingleVsMultipleFieldChanges(txApp, newCollection, oldCollection); err != nil {
++		if err := normalizeSingleVsMultipleFieldChanges(txApp, newCollection, oldCollection, views); err != nil {
+ 			return err
+ 		}
+ 
+@@ -161,7 +179,12 @@ func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollecti
+ 	return nil
+ }
+ 
+-func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, oldCollection *Collection) error {
++type viewDef struct {
++	Name string `db:"name"`
++	SQL  string `db:"sql"`
++}
++
++func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, oldCollection *Collection, views []viewDef) error {
+ 	if newCollection.IsView() || oldCollection == nil {
+ 		return nil // view or not an update
+ 	}
+@@ -192,21 +215,8 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
  
  			// temporary drop all views to prevent reference errors during the columns renaming
  			// (this is used as an "alternative" to the writable_schema PRAGMA)
@@ -280,7 +306,7 @@ index 3ce9255..894572a 100644
  					return err
  				}
  			}
-@@ -214,6 +216,8 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
+@@ -214,6 +224,8 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
  			originalName := newField.GetName()
  			oldTempName := "_" + newField.GetName() + security.PseudorandomString(5)
  
@@ -549,19 +575,34 @@ index 5b44e8b..bfefcc4 100644
  	collections := make([]*Collection, 0, len(names))
  
 diff --git a/ui/src/settings/backups/pocketflareRestore.js b/ui/src/settings/backups/pocketflareRestore.js
-index bbf9936..80cab46 100644
+index bbf9936..79a9c88 100644
 --- a/ui/src/settings/backups/pocketflareRestore.js
 +++ b/ui/src/settings/backups/pocketflareRestore.js
-@@ -5,6 +5,8 @@
+@@ -5,6 +5,23 @@
  const D1_MAX_BOUND_PARAMS = 100;
  const FILE_UPLOAD_CONCURRENCY = 3;
  
-+function detectMime(e){var n=(e||"").split(".").pop()?.toLowerCase();return{jpg:"image/jpeg",jpeg:"image/jpeg",png:"image/png",gif:"image/gif",webp:"image/webp",svg:"image/svg+xml",pdf:"application/pdf",json:"application/json",html:"text/html",css:"text/css",js:"text/javascript"}[n]||"application/octet-stream"}
++function detectMime(e) {
++    var n = (e || "").split(".").pop()?.toLowerCase();
++    return {
++        jpg: "image/jpeg",
++        jpeg: "image/jpeg",
++        png: "image/png",
++        gif: "image/gif",
++        webp: "image/webp",
++        svg: "image/svg+xml",
++        pdf: "application/pdf",
++        json: "application/json",
++        html: "text/html",
++        css: "text/css",
++        js: "text/javascript",
++    }[n] || "application/octet-stream";
++}
 +
-export function pocketflareRestorePage() {
-    const data = store({
-        phase: "idle",
-@@ -21,6 +23,7 @@ export function pocketflareRestorePage() {
+ export function pocketflareRestorePage() {
+     const data = store({
+         phase: "idle",
+@@ -13,6 +30,7 @@ export function pocketflareRestorePage() {
          activeRestore: null,
          progress: { done: 0, total: 0 },
          error: null,
@@ -569,17 +610,17 @@ export function pocketflareRestorePage() {
          sessionId: null,
          fileUploadToken: null,
          statusMsg: "",
-@@ -36,6 +38,9 @@ export function pocketflareRestorePage() {
-            if (resp.activeRestore) {
-                data.activeRestore = resp.activeRestore;
-                data.fileUploadToken = resp.activeRestore.fileUploadToken;
+@@ -36,6 +54,9 @@ export function pocketflareRestorePage() {
+             if (resp.activeRestore) {
+                 data.activeRestore = resp.activeRestore;
+                 data.fileUploadToken = resp.activeRestore.fileUploadToken;
 +                data.sessionId = resp.activeRestore.sessionId;
 +                data.phase = "resume";
 +                return;
              }
              if (resp.empty) {
                  data.phase = "ready";
-@@ -45,6 +50,29 @@ export function pocketflareRestorePage() {
+@@ -45,6 +66,29 @@ export function pocketflareRestorePage() {
              }
          } catch (err) {
              if (!err.isAbort) {
@@ -609,7 +650,7 @@ export function pocketflareRestorePage() {
                  data.error = err.response?.message || err.message || "Failed to check restore status";
                  data.phase = "error";
              }
-@@ -96,6 +124,8 @@ export function pocketflareRestorePage() {
+@@ -96,6 +140,8 @@ export function pocketflareRestorePage() {
              fileUploadToken = resp.fileUploadToken;
              data.sessionId = sessionId;
              data.fileUploadToken = fileUploadToken;
@@ -618,7 +659,7 @@ export function pocketflareRestorePage() {
          } catch (err) {
              if (!err.isAbort) {
                  const info = err.response || {};
-@@ -174,6 +204,124 @@ export function pocketflareRestorePage() {
+@@ -174,6 +220,133 @@ export function pocketflareRestorePage() {
  
          data.phase = "complete";
          data.statusMsg = "Restore complete. You may need to log in with restored superuser credentials.";
@@ -752,16 +793,17 @@ export function pocketflareRestorePage() {
      }
  
      async function importDatabase(sqlJS, dataDbEntry, auxDbEntry, sessionId, onProgress) {
-@@ -349,7 +497,7 @@ export function pocketflareRestorePage() {
+@@ -349,7 +522,8 @@ export function pocketflareRestorePage() {
          async function uploadOne(entry) {
              const blob = await entry.async("blob");
              const headers = { "X-Pocketflare-File-Key": entry.name, "X-Pocketflare-Restore-Token": fileUploadToken };
 -            if (blob.type) headers["X-Pocketflare-File-Content-Type"] = blob.type;
-+            headers["X-Pocketflare-File-Content-Type"] = detectMime(entry.name) || blob.type || "application/octet-stream";
++            headers["X-Pocketflare-File-Content-Type"] = detectMime(entry.name) || blob.type
++                || "application/octet-stream";
              const resp = await fetch("/api/pocketflare/restore/files", { method: "PUT", headers, body: blob });
              if (!resp.ok) {
                  const err = await resp.json().catch(() => ({}));
-@@ -371,6 +519,8 @@ export function pocketflareRestorePage() {
+@@ -371,6 +545,8 @@ export function pocketflareRestorePage() {
          data,
          handleFile,
          checkStatus,
@@ -770,7 +812,7 @@ export function pocketflareRestorePage() {
          render: function() {
              return t.div(
                  { className: "block" },
-@@ -486,3 +636,46 @@ export function pocketflareRestorePage() {
+@@ -486,3 +662,54 @@ export function pocketflareRestorePage() {
                              t.button({
                                  type: "button",
                                  className: "btn secondary m-t-sm",

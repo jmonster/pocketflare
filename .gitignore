@@ -44,6 +44,7 @@ internal/pocketbase/
 # Archives
 *.zip
 *.tar.gz
+!tests/fixtures/*.zip
 
 testapp/*.wasm
 testapp/testapp
