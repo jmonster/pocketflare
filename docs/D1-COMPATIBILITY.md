@@ -109,6 +109,12 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 | Collection import with views | No dedicated proof | — | Large import with many interdependent views not proven |
 | Raw SQL route | No dedicated proof | — | Statement splitter tested only via unit-level review of 014 state machine |
 
+### Next Proofs To Add
+
+- Multi-level cascade delete fixture with at least three cascade depths.
+- Collection import fixture with interdependent views.
+- Raw SQL route behavioral proof for statement splitting across strings, blob literals, line comments, and block comments.
+
 ## DO SQLite: Full-Compatibility Path
 
 For upstream SQLite semantics without rewriting apps, use the optional SQLite-backed Durable Object mode:
