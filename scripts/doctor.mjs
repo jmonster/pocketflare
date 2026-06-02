@@ -90,9 +90,10 @@ async function main() {
     skip("doctor endpoint", "auth required");
   } else {
     let docOK = false;
+    let body = null;
     try {
       const r = await fetch(`${workerURL}/api/pocketflare/doctor`, { headers: authHeaders });
-      const body = await r.json();
+      body = await r.json();
       console.log("  DB mode:", body.dbMode);
       console.log("  Main DB:", body.db?.ok ? "OK (" + body.db.latency + ")" : "FAIL: " + (body.db?.error || ""));
       console.log("  Aux DB:", body.auxDb?.ok ? "OK (" + body.auxDb.latency + ")" : "FAIL: " + (body.auxDb?.error || ""));
