@@ -172,6 +172,23 @@ async function fetch(req, env, ctx) {
 
   // D1 mode: boot Go/WASM inline in the Worker isolate.
 
+  // Proof: trigger the full scheduled-event → cron path via HTTP.
+  // Gated — only active when POCKETFLARE_ENABLE_PROOF_ROUTES=1.
+  if (url.pathname === "/_pf/proof/scheduled" && env.POCKETFLARE_ENABLE_PROOF_ROUTES === "1") {
+    try {
+      await scheduled({ cron: "* * * * *", scheduledTime: Date.now() }, env, ctx);
+      return new Response(JSON.stringify({ scheduled: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ scheduled: false, error: e.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  }
+
   if (url.pathname === "/_pf" || url.pathname === "/_pf/") {
     const runtimeState = runtimeStateForRequest();
     const runtimeWaitStart = performance.now();
