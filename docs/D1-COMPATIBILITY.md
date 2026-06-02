@@ -23,7 +23,9 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 | Batch read-after-write | POST then PATCH in same batch: deterministic 400 with `batch_request_failed`. Zero records persisted. |
 | Query-after-write in any tx | `d1pocketflare: cannot query after queued writes in a D1 batch transaction` |
 
-### Patched (D1-compatible via `patches/010-d1-transaction-compat.patch`)
+### Patched (D1-compatible via patches)
+
+**patch 010 (`010-d1-transaction-compat.patch`)**
 
 | Feature | Fix |
 |---|---|
@@ -33,13 +35,15 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 | Cascade deletes (single-level) | Cascade before main delete; collect all related records across all fields before writes |
 | Raw SQL route (`/api/sql`) | Split multi-statement SQL by `;`, reject mixed read/write |
 
-### Targeted patch needed
+**patch 014 (`014-d1-parity-fixes.patch`)**
 
-| Feature | Issue | Fix strategy |
-|---|---|---|
-| Collection import with view validation | View validation interleaved with writes | Prevalidate views, batch fixed writes |
-| Field type conversions (single↔multiple) | `normalizeSingleVsMultipleFieldChanges` queries `sqlite_master` after ALTER TABLE | Precompute conversion plan before tx |
-| Recursive/multi-level cascade deletes | `deleteRefRecords` calls `app.Delete()` which can trigger nested `cascadeRecordDelete` — inner cascade queries after outer writes are queued | Flatten cascade tree before any writes |
+| Feature | Fix |
+|---|---|
+| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch |
+| Field type conversions (single↔multiple) | View definitions pre-fetched outside the write transaction and passed to `normalizeSingleVsMultipleFieldChanges`; no more `sqlite_master` query after ALTER TABLE |
+| Recursive/multi-level cascade deletes | BFS traversal of entire cascade graph collects all records across all depths before any writes; `skipCascadeDelete` flag prevents re-entrant cascade |
+| SQL statement splitter hardening | Rune-based state machine respects string literals, blob literals, line comments, and block comments — semicolons inside those constructs are no longer treated as statement boundaries |
+| Restore resume / start-over | UI handles active restore session detection, resume from interrupted phase, and cancel with clear guardrails |
 
 ### Confirmed D1-compatible (no patch needed)
 
@@ -71,6 +75,14 @@ PocketBase RunInTransaction(fn)
 
 PocketBase migrations are the exception in D1 mode. Pocketflare disables the migration runner's outer transaction for D1 because older upstream migrations interleave writes and reads. Those migrations still use the same D1 driver for individual statements.
 
+## Hard Limitations
+
+D1 imposes constraints that cannot be patched around at the application layer:
+
+- **No arbitrary read-after-write in interactive transactions.** D1 `batch()` is statement-group atomic, not session-scoped. All statements must be known upfront. You cannot write, read the result, then decide the next write.
+- **Reads before writes are not isolated.** Queries issued before any write in a tx callback run directly against D1 without snapshot isolation. Concurrent writers may change data between the read and the batch commit.
+- **Migrations are statement-by-statement in D1 mode.** Pocketflare strips the outer transaction from the migration runner because legacy PocketBase migrations interleave reads and writes. Individual DDL statements still execute through the D1 driver.
+
 ## Diagnostics
 
 When a query-after-write is blocked, the driver emits a structured log line:
@@ -80,6 +92,22 @@ When a query-after-write is blocked, the driver emits a structured log line:
 ```
 
 This appears in `wrangler tail` output. Use it to identify which PocketBase paths need patching.
+
+## Proof Matrix
+
+| Feature | Proof | Mode | Remaining Risk |
+|---|---|---|---|
+| D1 bootstrap (no QAW) | `scripts/proof-d1-bootstrap.sh` | D1 local (wrangler dev) | Cold-start timing varies per deployment |
+| Field flip multi↔single | `scripts/proof-d1-bootstrap.sh` §5, `scripts/e2e-test.sh` §9 | D1 local + remote | View-heavy schemas not covered |
+| Restore happy path | `scripts/proof-restore-cli.sh` §1-5 | D1 + DO SQLite local | Large backup zip timing |
+| Restore resume | `scripts/proof-restore-cli.sh` §6 | D1 + DO SQLite local | Network interruption mid-DB-import |
+| Full CRUD + auth + files | `scripts/e2e-test.sh` §1-7 | D1 + DO SQLite remote | None known |
+| Batch atomicity | `scripts/e2e-test.sh` §8 | D1 + DO SQLite remote | None known |
+| Sequential health stability | `scripts/e2e-test.sh` §10 | D1 + DO SQLite remote | Cold-start after deploy not covered |
+| Cascade deletes (single-level) | `scripts/e2e-test.sh` §9 (implicit via collection delete) | D1 + DO SQLite remote | None known |
+| Cascade deletes (multi-level) | No dedicated proof | — | Depth > 2 not proven; add a fixture with 3+ cascade levels |
+| Collection import with views | No dedicated proof | — | Large import with many interdependent views not proven |
+| Raw SQL route | No dedicated proof | — | Statement splitter tested only via unit-level review of 014 state machine |
 
 ## DO SQLite: Full-Compatibility Path
 
