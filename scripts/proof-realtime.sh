@@ -83,7 +83,7 @@ green "  wrangler.proof-realtime.toml created"
 
 # ── 3. Start wrangler dev ──
 echo "── 3. Starting wrangler dev ──"
-pnpm exec wrangler dev --port 0 --config wrangler.proof-realtime.toml > "$ARTIFACT_DIR/dev.log" 2>&1 &
+pnpm exec wrangler dev --port 0 --config wrangler.proof-realtime.toml --var POCKETFLARE_REALTIME_WORKER_BRIDGE:1 > "$ARTIFACT_DIR/dev.log" 2>&1 &
 WRANGLER_PID=$!
 
 BASE=""
@@ -250,14 +250,24 @@ sleep 2
 DELETE_COUNT=$(grep -c "event:RECORD_DELETE" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
 assert "SSE RECORD_DELETE event received" '[ "$DELETE_COUNT" -ge 1 ]'
 
-# ── 13. Verify event payloads carry the record content ──
+# ── 13. Verify event payloads are authoritative ──
 echo "── 13. Verifying event payloads ──"
 
+# Create event must contain the record id and submitted fields.
 CREATE_DATA_OK=$(grep "realtime-proof-alpha" "$ARTIFACT_DIR/sse-stream.txt" || true)
-assert "RECORD_CREATE payload contains record title" '[ -n "$CREATE_DATA_OK" ]'
+assert "RECORD_CREATE payload contains submitted title" '[ -n "$CREATE_DATA_OK" ]'
+CREATE_HAS_ID=$(grep "$RECORD_ID" "$ARTIFACT_DIR/sse-stream.txt" || true)
+assert "RECORD_CREATE payload contains record id" '[ -n "$CREATE_HAS_ID" ]'
 
+# Update event must contain the updated fields.
 UPDATE_DATA_OK=$(grep "realtime-proof-beta" "$ARTIFACT_DIR/sse-stream.txt" || true)
 assert "RECORD_UPDATE payload contains updated title" '[ -n "$UPDATE_DATA_OK" ]'
+UPDATE_HAS_COUNT=$(grep '"count":99' "$ARTIFACT_DIR/sse-stream.txt" || true)
+assert "RECORD_UPDATE payload contains updated count" '[ -n "$UPDATE_HAS_COUNT" ]'
+
+# Delete event must carry the correct action.
+DELETE_ACTION_OK=$(grep '"action":"delete"' "$ARTIFACT_DIR/sse-stream.txt" || true)
+assert "RECORD_DELETE payload action is delete" '[ -n "$DELETE_ACTION_OK" ]'
 
 # ── 14. Clean up test collection ──
 echo "── 14. Cleaning up ──"

@@ -131,7 +131,15 @@ async function fetch(req, env, ctx) {
   // The DO is optional — without it, realtime falls through to Go where
   // SSE is non-functional on Workers (Flush is a no-op in the WASM bridge).
   if (url.pathname === "/api/realtime" && req.method === "GET" && env.REALTIME_DO) {
-    return handleRealtimeSSE(env, req.signal);
+    // Worker-held SSE with DO polling (gated behind env var for local proof).
+    // In production, stub.fetch(req) routes through the DO which handles
+    // streaming natively; Go broadcasts via DOClient.Send → DO /__send.
+    if (env.POCKETFLARE_REALTIME_WORKER_BRIDGE === "1") {
+      return handleRealtimeSSE(env, req.signal);
+    }
+    const id = env.REALTIME_DO.idFromName("hub");
+    const stub = env.REALTIME_DO.get(id);
+    return stub.fetch(req);
   }
 
   // DO SQLite mode: route all dynamic requests (including /_pf installer)
@@ -185,18 +193,12 @@ async function fetch(req, env, ctx) {
     const runtimeState = runtimeStateForRequest();
     const runtimeWaitStart = performance.now();
 
-    // Read request bodies before Go consumes them, for the realtime bridge.
-    // Must happen before handleRequest because Go consumes the body.
+    // Worker-side realtime bridge: only active when explicitly enabled for
+    // local proofing. The subscription body must be read before Go consumes it.
     let realtimeSubBody = null;
-    let crudBody = null;
-    if (env.REALTIME_DO) {
+    if (env.POCKETFLARE_REALTIME_WORKER_BRIDGE === "1") {
       if (url.pathname === "/api/realtime" && req.method === "POST") {
         try { realtimeSubBody = await req.clone().json(); } catch {}
-      } else {
-        const recordMatch = url.pathname.match(/^\/api\/collections\/([^/]+)\/records(?:\/([^/]+))?$/);
-        if (recordMatch && (req.method === "POST" || req.method === "PATCH")) {
-          try { crudBody = await req.clone().text(); } catch {}
-        }
       }
     }
 
@@ -206,12 +208,8 @@ async function fetch(req, env, ctx) {
     const response = await binding.handleRequest(req);
     const handlerDone = performance.now();
 
-    // Bridge realtime events from Go to the DO so they reach SSE connections.
-    // Go's DO stub (syumai/workers) does not reach the DO in wrangler dev
-    // local mode; this Worker-side bridge forwards subscriptions and record
-    // change events directly.
-    if (env.REALTIME_DO && response.ok) {
-      ctx.waitUntil(bridgeRealtimeToDO(env, url, req.method, realtimeSubBody, crudBody, ctx));
+    if (env.POCKETFLARE_REALTIME_WORKER_BRIDGE === "1" && response.ok) {
+      ctx.waitUntil(bridgeRealtimeToDO(env, url, req.method, realtimeSubBody, response.clone(), ctx));
     }
     const totalMs = handlerDone - fetchStart;
     const serverTiming = [
@@ -400,13 +398,13 @@ async function scheduled(event, env, ctx) {
   return binding.runScheduler(event);
 }
 
-// ── Realtime SSE (Worker-held connections) ─────────────────────────────
+// ── Realtime SSE (proof bridge, gated) ────────────────────────────────
 //
-// GET /api/realtime creates an SSE stream in the Worker and polls the
-// RealtimeDO for messages. Go broadcasts route through the DO's /__send,
-// which queues messages for Worker-held clients. This avoids the DO
-// stub.fetch() streaming limitation in wrangler dev while still exercising
-// the full Go → DO → Worker pipeline.
+// Only active when POCKETFLARE_REALTIME_WORKER_BRIDGE=1 (set by the
+// realtime proof script). Creates an SSE stream in the Worker and polls
+// the RealtimeDO for messages. In production, GET /api/realtime routes
+// through stub.fetch() to the DO which handles streaming natively; Go
+// broadcasts via DOClient.Send → DO /__send.
 
 async function handleRealtimeSSE(env, signal) {
   const clientId = crypto.randomUUID();
@@ -472,14 +470,15 @@ async function handleRealtimeSSE(env, signal) {
   });
 }
 
-// ── Realtime bridge (Worker → DO) ────────────────────────────────────
+// ── Realtime bridge (proof-only, gated) ──────────────────────────────
 //
-// Forwards subscription and record-change events from Go responses to
-// the RealtimeDO so they reach SSE connections. This bridges the gap
-// in wrangler dev where Go's DO stub (syumai/workers) does not reach
-// the Durable Object.
+// Only active when POCKETFLARE_REALTIME_WORKER_BRIDGE=1. Forwards
+// subscription data and record-change responses to the RealtimeDO so
+// events reach Worker-held SSE connections during local proofing.
+// Production relies on the Go broadcast path (DOClient.Send) which
+// handles auth, record-level access control, and authoritative payloads.
 
-async function bridgeRealtimeToDO(env, url, method, subBody, crudBody, ctx) {
+async function bridgeRealtimeToDO(env, url, method, subBody, responseClone, ctx) {
   const doId = env.REALTIME_DO.idFromName("hub");
   const doStub = env.REALTIME_DO.get(doId);
 
@@ -517,9 +516,17 @@ async function bridgeRealtimeToDO(env, url, method, subBody, crudBody, ctx) {
     if (!subsResp.ok) return;
     const subs = await subsResp.json();
 
+    // Read the authoritative record from Go's response body.
+    // POST returns the created record; PATCH returns the updated record;
+    // DELETE has no body (use empty record with the URL id).
     let record = {};
-    if (crudBody) {
-      try { record = JSON.parse(crudBody); } catch {}
+    if (method === "POST" || method === "PATCH") {
+      try {
+        const respText = await responseClone.text();
+        record = JSON.parse(respText);
+      } catch {}
+    } else if (method === "DELETE") {
+      record = { id: recordMatch[2] || "" };
     }
     const payload = JSON.stringify({
       action: eventName.toLowerCase().replace("record_", ""),
