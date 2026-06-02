@@ -1,5 +1,11 @@
 #!/bin/bash
-# proof-realtime.sh — Prove Pocketflare realtime works through the REALTIME_DO bridge.
+# proof-realtime-local-bridge.sh — Prove the gated local Worker realtime bridge.
+#
+# Sets POCKETFLARE_REALTIME_WORKER_BRIDGE=1 so the Worker holds SSE connections
+# and bridges record-change events from Go responses to the RealtimeDO. This is
+# a local-dev proof workaround; it does NOT exercise the production DO streaming
+# path (stub.fetch → RealtimeDO.handleConnection). For production parity, run a
+# separate proof against a deployed Worker without the bridge env var.
 #
 # Starts wrangler dev with REALTIME_DO bound, opens an SSE connection,
 # subscribes to a test collection, exercises create/update/delete, and
@@ -49,7 +55,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== Pocketflare Realtime Proof ==="
+echo "=== Pocketflare Realtime Local Bridge Proof ==="
 echo "artifacts: $ARTIFACT_DIR"
 echo ""
 
@@ -218,11 +224,11 @@ CREATE_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/$COLL_NAME/r
 RECORD_ID=$(echo "$CREATE_RESP" | jq -r .id 2>/dev/null || echo "")
 assert "record created" '[ -n "$RECORD_ID" ]'
 
-# Allow DO delivery and SSE write (Go broadcast → DO /__send → SSE stream).
+# Allow bridge delivery and SSE write (bridge → DO /__send → poll → SSE stream).
 sleep 2
 
-CREATE_COUNT=$(grep -c "event:RECORD_CREATE" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
-assert "SSE RECORD_CREATE event received" '[ "$CREATE_COUNT" -ge 1 ]'
+CREATE_EVENTS=$(grep -c "\"id\":\"$RECORD_ID\"" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
+assert "exactly 1 SSE event for this record after create" '[ "$CREATE_EVENTS" -eq 1 ]'
 
 # ── 11. Update record → assert RECORD_UPDATE ──
 echo "── 11. Update record → expect RECORD_UPDATE ──"
@@ -235,8 +241,8 @@ assert "record updated (HTTP 200)" '[ "$UPDATE_HTTP" = "200" ]'
 
 sleep 2
 
-UPDATE_COUNT=$(grep -c "event:RECORD_UPDATE" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
-assert "SSE RECORD_UPDATE event received" '[ "$UPDATE_COUNT" -ge 1 ]'
+UPDATE_EVENTS=$(grep -c "\"id\":\"$RECORD_ID\"" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
+assert "exactly 2 SSE events for this record after update" '[ "$UPDATE_EVENTS" -eq 2 ]'
 
 # ── 12. Delete record → assert RECORD_DELETE ──
 echo "── 12. Delete record → expect RECORD_DELETE ──"
@@ -247,8 +253,8 @@ assert "record deleted (HTTP 204)" '[ "$DELETE_HTTP" = "204" ]'
 
 sleep 2
 
-DELETE_COUNT=$(grep -c "event:RECORD_DELETE" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
-assert "SSE RECORD_DELETE event received" '[ "$DELETE_COUNT" -ge 1 ]'
+DELETE_EVENTS=$(grep -c "\"id\":\"$RECORD_ID\"" "$ARTIFACT_DIR/sse-stream.txt" 2>/dev/null || true)
+assert "exactly 3 SSE events for this record after delete" '[ "$DELETE_EVENTS" -eq 3 ]'
 
 # ── 13. Verify event payloads are authoritative ──
 echo "── 13. Verifying event payloads ──"
@@ -292,7 +298,7 @@ echo "========================================="
 TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
 if [ "$FAIL" -eq 0 ]; then
-    green "REALTIME PROOF PASSED"
+    green "REALTIME LOCAL BRIDGE PROOF PASSED"
     exit 0
 else
     red "$FAIL TEST(S) FAILED"
