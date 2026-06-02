@@ -21,10 +21,8 @@ D1 provides point-in-time recovery (PITR) automatically. No action needed to ena
 
 | Plan | Retention |
 |---|---|
-| Workers Free | 30 days |
+| Free | 7 days |
 | Workers Paid | 30 days |
-| Business | 90 days |
-| Enterprise | 90 days |
 
 Restore a database to any point within the retention window:
 
@@ -57,15 +55,17 @@ Export a full SQL dump for off-platform storage or cross-account portability:
 # Export APP_DB
 pnpm exec wrangler d1 export pocketflare-app \
   --remote \
-  --output .artifacts/backups/pocketflare-app-$(date -u +%Y%m%dT%H%M%SZ).sql
+  --output $BACKUP_DIR/pocketflare-app-$(date -u +%Y%m%dT%H%M%SZ).sql
 
 # Export LOGS_DB
 pnpm exec wrangler d1 export pocketflare-logs \
   --remote \
-  --output .artifacts/backups/pocketflare-logs-$(date -u +%Y%m%dT%H%M%SZ).sql
+  --output $BACKUP_DIR/pocketflare-logs-$(date -u +%Y%m%dT%H%M%SZ).sql
 ```
 
 **Always use `--remote`.** Without it, wrangler exports local dev data, not production.
+
+Set `$BACKUP_DIR` to a durable path outside the repository. `.artifacts/` is disposable and must not be used for production backups.
 
 For automated exports, wrap in a cron script or scheduled Worker. Cloudflare does not provide a managed scheduled-export feature for D1.
 
@@ -74,11 +74,11 @@ For automated exports, wrap in a cron script or scheduled Worker. Cloudflare doe
 ```sh
 pnpm exec wrangler d1 execute pocketflare-app \
   --remote \
-  --file .artifacts/backups/pocketflare-app-20260602T103000Z.sql
+  --file $BACKUP_DIR/pocketflare-app-20260602T103000Z.sql
 
 pnpm exec wrangler d1 execute pocketflare-logs \
   --remote \
-  --file .artifacts/backups/pocketflare-logs-20260602T103000Z.sql
+  --file $BACKUP_DIR/pocketflare-logs-20260602T103000Z.sql
 ```
 
 **Limitations:**
@@ -100,32 +100,43 @@ Time Travel is the primary recovery path. SQL exports are a safety net for cross
 
 When `POCKETFLARE_DB_MODE=do_sqlite`, the app database lives inside a Durable Object's SQLite storage.
 
-### Backup Options
+### Cloudflare PITR API (Platform-Provided)
 
-**Durable Object SQLite does not provide managed point-in-time recovery equivalent to D1 Time Travel.** The SQLite database is a file inside the DO's persistent storage. Cloudflare does not offer a dashboard or CLI command to snapshot or restore DO SQLite storage.
+Cloudflare provides point-in-time recovery for SQLite-backed Durable Objects in production (not local dev). The DO SQLite Storage API includes three PITR methods:
 
-Available approaches:
+```js
+// Get a bookmark for the current point in time
+const bookmark = ctx.storage.sql.getCurrentBookmark();
 
-1. **DO Alarm-based export to R2 (manual implementation required).** Write a DO alarm handler that exports the SQLite database to an R2 bucket on a schedule. This is application code you must write and maintain. Pocketflare does not include this handler — it is a project-specific addition.
+// Get a bookmark for a point within the last 30 days
+const pastBookmark = ctx.storage.sql.getBookmarkForTime(someDate);
 
-2. **PocketBase backup zip via admin API.** In DO SQLite mode, PocketBase's built-in backup creation (`POST /api/backups`) archives the SQLite database and local storage files into a zip stored in the `BACKUPS` R2 bucket. This works because DO SQLite mode runs PocketBase as it would on a single server. However:
-   - The backup includes only `storage/` files PocketBase knows about (those tracked in `_files` table records), not arbitrary R2 objects.
-   - Backup creation is synchronous and may hit Worker CPU time limits for large databases.
-   - Auto-backups (`POCKETBASE_AUTO_BACKUPS`) are not tested at scale on Workers.
+// Schedule restore to a bookmark on next DO restart
+ctx.storage.sql.onNextSessionRestoreBookmark(bookmark);
+// Follow with ctx.abort() to trigger the restart
+```
 
-3. **Periodic SQLite dump via `wrangler` (not supported).** There is no `wrangler d1 export` equivalent for DO SQLite. The database is not externally queryable.
+This restores the entire SQLite database contents (tables and key-value data) to the state at the bookmark. The retention window is 30 days. An undo bookmark is returned by `onNextSessionRestoreBookmark`, allowing rollback of the recovery if needed.
 
-### Recovery Path
+**Pocketflare does not currently expose an operator command, route, or UI for invoking DO SQLite PITR.** The platform API exists and is functional in production; Pocketflare tooling has not yet wired it to a recovery lane. Until that is implemented, DO SQLite PITR is **platform-supported but not Pocketflare-accessible** — an operator would need to add application code to the DO to call these methods.
 
-Recovery from DO SQLite mode depends on what backup artifacts exist:
+### PocketBase Backup Zip
 
-- **From PocketBase backup zip:** Restore via admin UI or `scripts/restore-backup.mjs` into an empty Pocketflare target. This is a clean-slate restore, not an in-place recovery.
-- **From custom DO Alarm export:** Restore is project-specific. Implement a DO handler that reads the exported SQLite dump from R2 and replaces the active database.
-- **No backup:** Data is lost. DO SQLite has no automatic PITR.
+In DO SQLite mode, PocketBase's built-in backup creation (`POST /api/backups`) archives the SQLite database and local storage files into a zip stored in the `BACKUPS` R2 bucket:
+
+- The backup includes `storage/` files tracked in `_files` table records, not arbitrary R2 objects.
+- Backup creation is synchronous and may hit Worker CPU time limits for large databases.
+- Auto-backups (`POCKETBASE_AUTO_BACKUPS`) are not tested at scale on Workers.
+
+Restore via admin UI or `scripts/restore-backup.mjs` into an empty Pocketflare target. This is a clean-slate restore, not an in-place recovery.
+
+### DO Alarm-Based Export (Manual)
+
+Write a DO alarm handler that exports the SQLite database to an R2 bucket on a schedule. This is application code you must write and maintain. Pocketflare does not include this handler.
 
 ### Recommendation
 
-For production deployments that need managed backup and PITR, use D1 mode. DO SQLite mode is suited for development, low-stakes deployments, or apps where PocketBase backup zips are an acceptable recovery path.
+For production deployments that need managed, operator-accessible PITR, use D1 mode. DO SQLite mode is suited for development, low-stakes deployments, or apps where PocketBase backup zips are an acceptable recovery path. If you need DO SQLite PITR today, implement it in your DO class directly using the `ctx.storage.sql` bookmark methods.
 
 ## R2 STORAGE Bucket
 
@@ -229,8 +240,9 @@ node scripts/backup-verify.mjs <worker-url> --token <superuser-token>
 This performs non-destructive checks against the live Worker:
 
 1. **Doctor endpoint** — confirms DB mode, APP_DB connectivity, LOGS_DB connectivity, STORAGE binding, BACKUPS binding.
-2. **Backup binding names** — verifies the bindings match the expected names (`APP_DB`, `LOGS_DB`, `STORAGE`, `BACKUPS`).
+2. **Binding presence and live endpoint** — confirms bindings are reachable via the doctor endpoint; expected resource names are listed from wrangler.toml configuration.
 3. **R2 key shape** — confirms the storage prefix convention is documented (does not require live objects).
+4. **wrangler.toml bindings** — verifies the local wrangler.toml declares all four backup-related bindings.
 
 For full restore-path verification, use `scripts/proof-restore-cli.sh` which exercises the end-to-end backup-zip restore flow against a `wrangler dev` Worker.
 
@@ -242,9 +254,9 @@ For full restore-path verification, use `scripts/proof-restore-cli.sh` which exe
 | **D1 APP_DB** | SQL export | `wrangler d1 export` / `wrangler d1 execute` | **Supported** — manual, scriptable |
 | **D1 LOGS_DB** | Time Travel (PITR) | `wrangler d1 time-travel restore` | **Supported** — built into D1 |
 | **D1 LOGS_DB** | SQL export | `wrangler d1 export` / `wrangler d1 execute` | **Supported** — manual, scriptable |
+| **DO SQLite** | PITR (Cloudflare API) | `ctx.storage.sql` bookmark methods | **Platform-supported, not Pocketflare-wired** — no operator command/route/UI yet |
 | **DO SQLite** | PocketBase backup zip | `scripts/restore-backup.mjs` | **Manual** — admin UI or CLI restore into empty target |
 | **DO SQLite** | Custom DO Alarm export | Project-specific | **Unsupported** — not implemented in Pocketflare |
-| **DO SQLite** | Managed PITR | — | **Unsupported** — DO SQLite has no PITR |
 | **R2 STORAGE** | `rclone sync` / `aws s3 sync` | Reverse sync or `aws s3 cp` | **Manual** — use S3-compatible tools |
 | **R2 STORAGE** | Managed backup | — | **Unsupported** — R2 has no backup feature |
 | **BACKUPS bucket** | PocketBase backup zips | `scripts/restore-backup.mjs` | **Manual** — migration artifact, not complete backup |
