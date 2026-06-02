@@ -9,6 +9,8 @@ make build                   # compile Go WASM and copy JS runtime files into di
 make deploy                  # build, then pnpm exec wrangler deploy
 make dev                     # pnpm exec wrangler dev
 ./scripts/scaffold-project.sh
+node scripts/doctor.mjs <url> --token <token>           # deployment health check
+node scripts/backup-verify.mjs <url> --token <token>    # backup readiness check
 ```
 
 ## Wrangler `--remote` is ALWAYS required
@@ -23,6 +25,16 @@ pnpm exec wrangler r2 object put "bucket/key" --file ./local-file
 # RIGHT
 pnpm exec wrangler d1 execute my-app --remote --command="SELECT ..."
 pnpm exec wrangler r2 object put "bucket/key" --file ./local-file --remote
+```
+
+**Backup and export commands also require `--remote`:**
+
+```sh
+# D1 export and Time Travel always need --remote
+pnpm exec wrangler d1 export pocketflare-app --remote --output backup.sql
+pnpm exec wrangler d1 time-travel restore pocketflare-app --remote --timestamp "<ts>"
+
+# DO NOT run these commands without --remote — you'll get local data, not production.
 ```
 
 **`migrate-files.sh` does NOT add `--remote` automatically.** If you use it for a real migration, either pass `--remote` in the script or upload through the PocketBase API directly (which uses the Worker's R2 binding and always hits remote).
@@ -69,7 +81,7 @@ Normal new-project admin setup should use Pocketflare's `/_pf` route, which redi
 
 That adapter covers PocketBase-managed file fields and PocketBase filesystem calls. It is not a general writable POSIX filesystem for custom Go code. Direct `os.*`, fsnotify, subprocess, and raw socket assumptions need Worker-compatible replacements.
 
-PocketBase backups are not complete Pocketflare production backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 or DO SQLite and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but ongoing production backups should use Cloudflare-native primitives: D1 Time Travel/export, DO SQLite PITR, and separate `STORAGE` R2 bucket backup/copy. PocketBase backup zips can be restored into an empty Pocketflare target from the admin UI or `scripts/restore-backup.mjs` as a migration path from standalone PocketBase.
+PocketBase backups are not complete Pocketflare production backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 or DO SQLite and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but ongoing production backups should use Cloudflare-native primitives: D1 Time Travel/export and separate `STORAGE` R2 bucket backup/copy. PocketBase backup zips can be restored into an empty Pocketflare target from the admin UI or `scripts/restore-backup.mjs` as a migration path from standalone PocketBase. See `docs/production-backups.md` for the full backup strategy, recovery paths, and support matrix. Verify backup bindings with `node scripts/backup-verify.mjs <url> --token <token>`.
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 

@@ -49,6 +49,8 @@ Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, n
 | `scripts/scaffold-project.sh` | Prompts and creates a new Pocketflare project. |
 | `scripts/migrate-data.sh` | Exports PocketBase SQLite `data.db` to SQL for D1 import. |
 | `scripts/migrate-files.sh` | Uploads `pb_data/storage` files to the R2 `STORAGE` bucket. |
+| `scripts/backup-verify.mjs` | Non-destructive backup readiness check against a deployed Worker. |
+| `docs/production-backups.md` | Production backup strategy, recovery paths, and support matrix. |
 | `wrangler.toml` | Worker name, app URL var, D1/R2 bindings, Durable Object bindings, Workers Cron Triggers, and Assets binding. |
 
 ## Cloudflare Resources
@@ -187,10 +189,11 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
 - PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
 - SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
-- PocketBase upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native primitives (D1 Time Travel/export, DO SQLite PITR, R2 backup/copy) for production backups. PocketBase backup zips can be restored into empty Pocketflare targets for migration.
+- PocketBase upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native primitives (D1 Time Travel/export, R2 object copy) for production backups. PocketBase backup zips can be restored into empty Pocketflare targets for migration. See `docs/production-backups.md` for the full backup strategy, supported recovery paths, and limitations.
 
 ## References
 
+- Production backup strategy: `docs/production-backups.md`
 - Cloudflare Workers Static Assets: https://developers.cloudflare.com/workers/static-assets/
 - Cloudflare Workers limits: https://developers.cloudflare.com/workers/platform/limits/
 - Workers Assets binding: https://developers.cloudflare.com/workers/static-assets/binding/
