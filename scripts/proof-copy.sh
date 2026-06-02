@@ -1,16 +1,16 @@
 #!/bin/bash
 # proof-copy.sh — Prove Pocketflare R2 filesystem Copy behavior.
 #
-# Tests both copy paths against a local wrangler dev Worker:
-#   1. Streaming fallback (default: no API credentials set)
-#   2. Server-side S3 CopyObject (when R2 API credentials are configured)
+# Runtime-proves the streaming fallback path against a local wrangler dev
+# Worker. If R2 API credentials are configured, the same route reports the
+# S3 CopyObject path, but that path still needs a credentialed runtime proof.
 #
 # Verifies:
 #   - Source and destination objects exist after copy
 #   - Bytes match exactly
 #   - Content type is preserved
-#   - Correct copy path is reported (streaming-fallback or s3-copy-object)
-#   - Large objects (20 MiB) succeed with bounded memory
+#   - Correct copy path is reported
+#   - Large objects (20 MiB) succeed through the copy path under test
 #
 # Usage:
 #   ./scripts/proof-copy.sh
