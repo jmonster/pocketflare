@@ -17,7 +17,7 @@
 # Usage:
 #   ./scripts/proof-copy.sh
 #
-# R2 API credentials (for S3 CopyObject proof):
+# Parent R2 API credentials (for S3 CopyObject proof):
 #   Set via environment variables:
 #     export R2_ACCESS_KEY_ID=...
 #     export R2_SECRET_ACCESS_KEY=...
@@ -26,6 +26,11 @@
 #     security add-generic-password -s pocketflare-r2-access-key-id -a "$USER" -w "<key>"
 #     security add-generic-password -s pocketflare-r2-secret-access-key -a "$USER" -w "<secret>"
 #     security add-generic-password -s pocketflare-r2-account-id -a "$USER" -w "<account-id>"
+#   If the account ID is omitted and wrangler is logged in to exactly one
+#   account, the script reads it from `wrangler whoami --json`.
+#
+# The script derives 15-minute temporary credentials in memory and passes those
+# into wrangler dev. No temporary Cloudflare resource is created or persisted.
 #
 # Requires: wrangler, jq, curl
 set -euo pipefail
@@ -56,6 +61,15 @@ keychain_get() {
 	security find-generic-password -s "$service" -a "$USER" -w 2>/dev/null || true
 }
 
+wrangler_account_id() {
+	local json count
+	json="$(pnpm exec wrangler whoami --json 2>/dev/null || true)"
+	count="$(echo "$json" | jq -r '.accounts | length' 2>/dev/null || echo 0)"
+	if [[ "$count" = "1" ]]; then
+		echo "$json" | jq -r '.accounts[0].id'
+	fi
+}
+
 source_credentials() {
 	R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
 	R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
@@ -70,10 +84,97 @@ source_credentials() {
 	if [[ -z "$R2_ACCOUNT_ID" ]]; then
 		R2_ACCOUNT_ID="$(keychain_get "pocketflare-r2-account-id")"
 	fi
+	if [[ -z "$R2_ACCOUNT_ID" && ( -n "$R2_ACCESS_KEY_ID" || -n "$R2_SECRET_ACCESS_KEY" ) ]]; then
+		R2_ACCOUNT_ID="$(wrangler_account_id)"
+	fi
 }
 
 have_credentials() {
 	[[ -n "${R2_ACCESS_KEY_ID:-}" ]] && [[ -n "${R2_SECRET_ACCESS_KEY:-}" ]] && [[ -n "${R2_ACCOUNT_ID:-}" ]]
+}
+
+storage_bucket_name() {
+	awk '
+		$0 ~ /^\[\[r2_buckets\]\]/ { in_bucket = 1; binding = ""; name = ""; next }
+		in_bucket && $1 == "binding" {
+			binding = $3
+			gsub(/"/, "", binding)
+			next
+		}
+		in_bucket && $1 == "bucket_name" {
+			name = $3
+			gsub(/"/, "", name)
+			if (binding == "STORAGE") {
+				print name
+				exit
+			}
+			next
+		}
+		in_bucket && $0 ~ /^\[/ { in_bucket = 0 }
+	' "$ROOT/wrangler.toml"
+}
+
+mint_temp_credentials() {
+	local bucket="$1"
+	local ttl="${2:-900}"
+	local json
+
+	json=$(R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+		R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+		R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
+		R2_TEMP_BUCKET="$bucket" \
+		R2_TEMP_TTL="$ttl" \
+		node <<'NODE'
+const crypto = require("node:crypto");
+
+const required = ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID", "R2_TEMP_BUCKET"];
+for (const key of required) {
+  if (!process.env[key]) {
+    throw new Error(`${key} is required`);
+  }
+}
+
+function b64url(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+const now = Math.floor(Date.now() / 1000);
+const ttl = Number(process.env.R2_TEMP_TTL || "900");
+const accountId = process.env.R2_ACCOUNT_ID;
+const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+const bucket = process.env.R2_TEMP_BUCKET;
+const endpointHost = `${accountId}.r2.cloudflarestorage.com`;
+
+const header = { alg: "HS256", typ: "JWT" };
+const payload = {
+  bucket,
+  scope: "object-read-write",
+  actions: ["CopyObject"],
+  paths: { prefixPaths: ["proof-copy/"], objectPaths: [] },
+  sub: accountId,
+  iss: accessKeyId,
+  aud: endpointHost,
+  iat: now,
+  exp: now + ttl,
+};
+
+const unsigned = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
+const signature = crypto.createHmac("sha256", secretAccessKey).update(unsigned).digest("base64url");
+const jwt = `${unsigned}.${signature}`;
+const tempSecret = crypto.createHash("sha256").update(jwt).digest("hex");
+
+process.stdout.write(JSON.stringify({
+  accessKeyId,
+  secretAccessKey: tempSecret,
+  sessionToken: Buffer.from(`jwt/${jwt}`).toString("base64"),
+}));
+NODE
+)
+
+	TEMP_R2_ACCESS_KEY_ID="$(echo "$json" | jq -r .accessKeyId)"
+	TEMP_R2_SECRET_ACCESS_KEY="$(echo "$json" | jq -r .secretAccessKey)"
+	TEMP_R2_SESSION_TOKEN="$(echo "$json" | jq -r .sessionToken)"
 }
 
 # ---------------------------------------------------------------------------
@@ -278,17 +379,32 @@ source_credentials
 
 # ── S3 CopyObject mode (credentials required) ──
 if have_credentials; then
-	echo "R2 API credentials: configured"
+	STORAGE_BUCKET="$(storage_bucket_name)"
+	if [[ -z "$STORAGE_BUCKET" ]]; then
+		red "  FAIL: could not find STORAGE bucket_name in wrangler.toml"
+		FAIL=$((FAIL + 1))
+	else
+		echo "R2 parent credentials: configured"
+		echo "Temporary S3 credentials: minted in memory, scoped to $STORAGE_BUCKET/proof-copy/, ttl=900s"
+		mint_temp_credentials "$STORAGE_BUCKET" 900
+
+		S3_DIR="$ARTIFACT_DIR/s3"
+		mkdir -p "$S3_DIR"
+		run_proof_suite "S3 CopyObject" "s3-copy-object" "$S3_DIR" \
+			--var "R2_ACCESS_KEY_ID:${TEMP_R2_ACCESS_KEY_ID}" \
+			--var "R2_SECRET_ACCESS_KEY:${TEMP_R2_SECRET_ACCESS_KEY}" \
+			--var "R2_ACCOUNT_ID:${R2_ACCOUNT_ID}" \
+			--var "R2_SESSION_TOKEN:${TEMP_R2_SESSION_TOKEN}" || true
+	fi
+elif [[ -n "${R2_ACCESS_KEY_ID:-}" || -n "${R2_SECRET_ACCESS_KEY:-}" ]]; then
 	S3_DIR="$ARTIFACT_DIR/s3"
 	mkdir -p "$S3_DIR"
-	run_proof_suite "S3 CopyObject" "s3-copy-object" "$S3_DIR" \
-		--var "R2_ACCESS_KEY_ID:${R2_ACCESS_KEY_ID}" \
-		--var "R2_SECRET_ACCESS_KEY:${R2_SECRET_ACCESS_KEY}" \
-		--var "R2_ACCOUNT_ID:${R2_ACCOUNT_ID}" || true
+	red "  FAIL: incomplete R2 parent credentials; set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_ACCOUNT_ID"
+	FAIL=$((FAIL + 1))
 else
 	S3_SKIPPED=true
 	yellow ""
-	yellow "R2 API credentials not configured — S3 CopyObject runtime proof will be skipped."
+	yellow "R2 parent credentials not configured — S3 CopyObject runtime proof will be skipped."
 	yellow "Set env vars R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID"
 	yellow "or store in macOS Keychain (pocketflare-r2-*) and re-run."
 fi
@@ -305,7 +421,7 @@ TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
 if $S3_SKIPPED; then
 	yellow ""
-	yellow "S3 CopyObject runtime proof: SKIPPED (credentials not configured)"
+	yellow "S3 CopyObject runtime proof: SKIPPED (parent credentials not configured)"
 	yellow ""
 fi
 if [ "$FAIL" -eq 0 ]; then

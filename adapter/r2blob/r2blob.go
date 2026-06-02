@@ -141,9 +141,10 @@ func (d *Driver) Copy(ctx context.Context, dstKey, srcKey string) error {
 	accessKey := cloudflare.Getenv("R2_ACCESS_KEY_ID")
 	secretKey := cloudflare.Getenv("R2_SECRET_ACCESS_KEY")
 	accountID := cloudflare.Getenv("R2_ACCOUNT_ID")
+	sessionToken := cloudflare.Getenv("R2_SESSION_TOKEN")
 
 	if accessKey != "" && secretKey != "" && accountID != "" {
-		return d.s3CopyObject(ctx, dstKey, srcKey, accessKey, secretKey, accountID)
+		return d.s3CopyObject(ctx, dstKey, srcKey, accessKey, secretKey, accountID, sessionToken)
 	}
 
 	copyFallbackOnce.Do(func() {
@@ -313,18 +314,22 @@ func (w *r2Writer) abortUpload() {
 
 // s3CopyObject performs a server-side copy via the R2 S3 HTTP API.
 // Zero data flows through the Worker.
-func (d *Driver) s3CopyObject(ctx context.Context, dstKey, srcKey string, accessKey, secretKey, accountID string) error {
+func (d *Driver) s3CopyObject(ctx context.Context, dstKey, srcKey string, accessKey, secretKey, accountID, sessionToken string) error {
 	host := accountID + ".r2.cloudflarestorage.com"
 	path := s3sig.CanonicalURI(d.bucketName + "/" + dstKey)
 	srcPath := s3sig.CanonicalURI(d.bucketName + "/" + srcKey)
 
 	now := time.Now()
 	payloadSHA := s3sig.EmptyPayloadHash()
+	extraHeaders := map[string]string{"x-amz-copy-source": srcPath}
+	if sessionToken != "" {
+		extraHeaders["x-amz-security-token"] = sessionToken
+	}
 
 	auth := s3sig.Sign(
 		accessKey, secretKey, "auto", "s3", now,
 		"PUT", host, path,
-		map[string]string{"x-amz-copy-source": srcPath},
+		extraHeaders,
 		payloadSHA,
 	)
 
@@ -337,6 +342,9 @@ func (d *Driver) s3CopyObject(ctx context.Context, dstKey, srcKey string, access
 	headers.Set("x-amz-date", now.Format("20060102T150405Z"))
 	headers.Set("x-amz-content-sha256", payloadSHA)
 	headers.Set("x-amz-copy-source", srcPath)
+	if sessionToken != "" {
+		headers.Set("x-amz-security-token", sessionToken)
+	}
 	headers.Set("Authorization", auth)
 	fetchOpts.Set("headers", headers)
 

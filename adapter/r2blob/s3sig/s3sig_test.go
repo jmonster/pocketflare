@@ -116,6 +116,25 @@ func TestSignWithExtraHeaders(t *testing.T) {
 	}
 }
 
+func TestSignWithSessionTokenHeader(t *testing.T) {
+	extra := map[string]string{
+		"x-amz-copy-source":    "/bucket-name/srcKey",
+		"x-amz-security-token": "session-token",
+	}
+	auth := Sign(
+		"AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+		"auto", "s3",
+		time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+		"PUT", "example.r2.cloudflarestorage.com", "/bucket-name/dstKey",
+		extra, EmptyPayloadHash(),
+	)
+
+	expectedSigned := "host;x-amz-content-sha256;x-amz-copy-source;x-amz-date;x-amz-security-token"
+	if !strings.Contains(auth, "SignedHeaders="+expectedSigned) {
+		t.Errorf("expected SignedHeaders=%s, got: %s", expectedSigned, auth)
+	}
+}
+
 func TestCanonicalURIWithBucketPrefix(t *testing.T) {
 	// R2 keys are stored under storage/<collection>/<record>/<filename>.
 	key := "storage/pbc_12345/pbr_67890/my image (1).jpg"
