@@ -36,6 +36,9 @@ type proofCopyResponse struct {
 }
 
 func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEvent]) {
+	if cloudflare.Getenv("POCKETFLARE_ENABLE_PROOF_ROUTES") != "1" {
+		return
+	}
 	rg.POST("/proof/copy", func(e *core.RequestEvent) error {
 		body := new(proofCopyRequest)
 		if err := e.BindBody(body); err != nil {

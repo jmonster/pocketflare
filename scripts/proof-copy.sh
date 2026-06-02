@@ -65,9 +65,9 @@ cd "$ROOT"
 pnpm exec wrangler dev --port 0 \
     --var POCKETFLARE_ADMIN_EMAIL:"$ADMIN_EMAIL" \
     --var POCKETFLARE_ADMIN_PASSWORD:"$ADMIN_PASSWORD" \
+    --var POCKETFLARE_ENABLE_PROOF_ROUTES:1 \
     > "$ARTIFACT_DIR/dev.log" 2>&1 &
 WRANGLER_PID=$!
-
 BASE=""
 for i in $(seq 1 30); do
     if PORT=$(grep -o 'http://localhost:[0-9]\+' "$ARTIFACT_DIR/dev.log" 2>/dev/null | head -1 | grep -o '[0-9]\+$' || true); [[ -n "$PORT" ]]; then

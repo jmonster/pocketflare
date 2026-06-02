@@ -86,12 +86,12 @@ Runtime terms:
 
 S3 `CopyObject` is only an optimization for runtime filesystem Copy. With optional R2 API credentials, Pocketflare asks R2 to copy the object server-side. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker.
 
-Both paths are proven up to 20 MiB via `scripts/proof-copy.sh` (run against a local `wrangler dev` Worker):
+The streaming fallback is proven correct up to 20 MiB via `scripts/proof-copy.sh` (run against a local `wrangler dev` Worker with `POCKETFLARE_ENABLE_PROOF_ROUTES=1`):
 
-- **Streaming fallback** (default, no credentials): Uses `FixedLengthStream` + `pipeTo` to relay source body to destination. No Go-side buffering — memory is bounded regardless of object size.
-- **S3 CopyObject** (when `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID` are set): Zero data through the Worker. R2 copies the object server-side. Object size is limited only by R2's S3 API limits.
+- **Streaming fallback** (default, no credentials): Uses `FixedLengthStream` + `pipeTo` to relay source body to destination. The copy path itself has no Go-side buffering — memory stays bounded regardless of object size. The proof route allocates source generation and verification buffers (capped at 20 MiB), but those are test scaffolding, not part of the copy path under test.
+- **S3 CopyObject** (requires `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID`): Zero data through the Worker — R2 copies the object server-side. Object size is limited only by R2 S3 API limits. Structurally covered (same code path as the streaming fallback up to the `fetch()` call) and SigV4 signing is unit-tested, but **not yet runtime-proven** with credentials. Awaiting credentialed proof in a deployed Worker.
 
-The proof route (`POST /api/pocketflare/proof/copy`, superuser auth) uploads a random object, copies it, and verifies byte-for-byte equality including content type preservation. The response reports which copy path was used.
+The proof route (`POST /api/pocketflare/proof/copy`, gated behind `POCKETFLARE_ENABLE_PROOF_ROUTES=1`) uploads a random object, copies it, and verifies byte-for-byte equality including content type preservation. The response reports which copy path was used.
 
 ## Backups and Restore
 
