@@ -2,6 +2,52 @@ diff --git a/apis/sql.go b/apis/sql.go
 index 1db91f9..24fff13 100644
 --- a/apis/sql.go
 +++ b/apis/sql.go
+@@ -111,22 +111,32 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 		result.ExecTime = time.Since(now).Milliseconds()
+ 	}()
+ 
++	// Split multi-statement queries by ";" so each becomes a separate
++	// statement. D1 prepare() accepts only single statements, and mixed
++	// read/write batches cannot be evaluated with the deferred D1 tx model.
++	statements := splitSQLStatements(query)
++	hasReadStatement := false
++	hasWriteStatement := false
++	for _, stmt := range statements {
++		ucStmt := strings.ToUpper(strings.TrimSpace(stmt))
++		if strings.HasPrefix(ucStmt, "SELECT") || strings.HasPrefix(ucStmt, "PRAGMA") {
++			hasReadStatement = true
++			continue
++		}
++		for _, prefix := range knownWriteQueryPrefixes {
++			if strings.HasPrefix(ucStmt, prefix) {
++				hasWriteStatement = true
++				break
++			}
++		}
++	}
++	if hasReadStatement && hasWriteStatement {
++		return nil, errors.New("mixed read/write SQL is not supported in a single request on D1; send read-only queries separately")
++	}
++
+ 	// assume write/mutation query
+ 	// ---------------------------------------------------------------
+ 	if isPossibleWriteQuery {
+-		// Split multi-statement queries by ";" so each becomes a
+-		// separate queued write in the D1 batch transaction.
+-		// D1 prepare() accepts only single statements.
+-		statements := splitSQLStatements(query)
+-
+-		// Reject mixed read+write batches — the driver cannot
+-		// interleave SELECT with queued writes inside a tx.
+-		for _, stmt := range statements {
+-			ucStmt := strings.ToUpper(strings.TrimSpace(stmt))
+-			if strings.HasPrefix(ucStmt, "SELECT") || strings.HasPrefix(ucStmt, "PRAGMA") {
+-				return nil, errors.New("mixed read/write SQL is not supported in a single request on D1; send read-only queries separately")
+-			}
+-		}
+ 
+ 		txErr := app.RunInTransaction(func(txApp core.App) error {
+ 			var totalAffected int64
 @@ -207,16 +207,115 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
  	return result, nil
  }
@@ -206,7 +252,7 @@ diff --git a/core/collection_query.go b/core/collection_query.go
 index e84564a..521e931 100644
 --- a/core/collection_query.go
 +++ b/core/collection_query.go
-@@ -60,6 +60,24 @@ func (app *BaseApp) ReloadCachedCollections() error {
+@@ -60,17 +60,35 @@ func (app *BaseApp) ReloadCachedCollections() error {
  
  // FindCollectionByNameOrId finds a single collection by its name (case insensitive) or id.
  func (app *BaseApp) FindCollectionByNameOrId(nameOrId string) (*Collection, error) {
@@ -231,6 +277,18 @@ index e84564a..521e931 100644
  	m := &Collection{}
  
  	err := app.CollectionQuery().
+ 		AndWhere(dbx.NewExp("[[id]]={:id} OR LOWER([[name]])={:name}", dbx.Params{
+ 			"id":   nameOrId,
+ 			"name": strings.ToLower(nameOrId),
+ 		})).
+ 		Limit(1).
+ 		One(m)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
+ 	return m, nil
+ }
 diff --git a/core/collection_record_table_sync.go b/core/collection_record_table_sync.go
 index 3ce9255..b004504 100644
 --- a/core/collection_record_table_sync.go
@@ -417,7 +475,7 @@ index 3e472ff..863ce3d 100644
  	sortedRefKeys := make([]*Collection, 0, len(refs))
  	for k := range refs {
  		sortedRefKeys = append(sortedRefKeys, k)
-@@ -1518,67 +1565,89 @@ func cascadeRecordDelete(app App, mainRecord *Record, refs map[*Collection][]Fie
+@@ -1518,72 +1565,96 @@ func cascadeRecordDelete(app App, mainRecord *Record, refs map[*Collection][]Fie
  		return sortedRefKeys[i].Name < sortedRefKeys[j].Name
  	})
  
@@ -425,6 +483,7 @@ index 3e472ff..863ce3d 100644
 -	// and fields before queuing any writes. This avoids
 -	// query-after-write inside the D1 batch transaction.
  	type cascadeBatch struct {
++		targetRecord *Record
  		refRecords []*Record
  		field      Field
  	}
@@ -434,8 +493,9 @@ index 3e472ff..863ce3d 100644
 +	visited := make(map[string]struct{})
 +
 +	type levelEntry struct {
-+		records []*Record
-+		field   Field
++		targetRecord *Record
++		records      []*Record
++		field        Field
 +	}
 +
 +	// Level 0: main record's direct cascade references
@@ -477,7 +537,7 @@ index 3e472ff..863ce3d 100644
 +				return err
  			}
 +			if len(collected) > 0 {
-+				currentLevel = append(currentLevel, levelEntry{collected, field})
++				currentLevel = append(currentLevel, levelEntry{mainRecord, collected, field})
 +			}
 +		}
 +	}
@@ -492,7 +552,7 @@ index 3e472ff..863ce3d 100644
 +				}
 +				visited[rec.Id] = struct{}{}
 +				rec.skipCascadeDelete = true
-+				allBatches = append(allBatches, cascadeBatch{[]*Record{rec}, entry.field})
++				allBatches = append(allBatches, cascadeBatch{entry.targetRecord, []*Record{rec}, entry.field})
  
 -			batchSize := 4000
 -			var collected []*Record
@@ -528,7 +588,7 @@ index 3e472ff..863ce3d 100644
 +							return err
 +						}
 +						if len(subCollected) > 0 {
-+							nextLevel = append(nextLevel, levelEntry{subCollected, field})
++							nextLevel = append(nextLevel, levelEntry{rec, subCollected, field})
 +						}
 +					}
  				}
@@ -544,8 +604,14 @@ index 3e472ff..863ce3d 100644
 -	// Phase 2: process all writes after ALL queries are complete.
 +	// Phase 2: delete all collected records
  	for _, batch := range allBatches {
- 		if err := deleteRefRecords(app, mainRecord, batch.refRecords, batch.field); err != nil {
+-		if err := deleteRefRecords(app, mainRecord, batch.refRecords, batch.field); err != nil {
++		if err := deleteRefRecords(app, batch.targetRecord, batch.refRecords, batch.field); err != nil {
  			return err
+ 		}
+ 	}
+ 
+ 	return nil
+ }
 diff --git a/core/view.go b/core/view.go
 index 5b44e8b..bfefcc4 100644
 --- a/core/view.go

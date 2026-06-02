@@ -175,7 +175,7 @@ Terminology:
 - Download means [PocketBase] serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
 - Copy means [PocketBase]'s filesystem `Copy(src, dst)` method duplicated an existing object. Normal uploads, downloads, and migration imports do not use S3 `CopyObject`.
 
-With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. Large-copy fallback still needs runtime proof.
+With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. The fallback path is runtime-proven up to 20 MiB via `scripts/proof-copy.sh`; the S3 `CopyObject` path is implemented and uses scoped temporary credentials in the proof lane, but still needs a credentialed proof run.
 
 ## Backups and Restore
 
@@ -207,7 +207,7 @@ Navigate to Settings → Backups, upload the `.zip` backup file. The restore pag
 node scripts/restore-backup.mjs https://<worker-domain> backup.zip --token <superuser-token>
 ```
 
-The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase.
+The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. Restore is proven with a small checked-in backup fixture; large backup zips still need scale proof against Worker CPU, upload, and R2 timing limits.
 
 ## Email
 
@@ -237,7 +237,7 @@ pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_URL
 pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_TOKEN
 ```
 
-Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then [PocketBase] admin SMTP settings. SMTP over Workers sockets has been proven with Amazon SES STARTTLS on port 587. Provider behavior can still vary; HTTP providers and webhook delivery remain available for API-based mail.
+Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then [PocketBase] admin SMTP settings. SMTP over Workers sockets has live proof only with Amazon SES STARTTLS on port 587. Provider behavior can still vary; HTTP providers and webhook delivery remain available for API-based mail.
 
 Amazon SES SMTP credentials use a derived SMTP password, not the raw 40-character AWS secret access key. After creating SES SMTP credentials for the same region as your SMTP endpoint, convert the secret locally:
 
@@ -338,15 +338,16 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 
 ## Current Limits
 
-- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported on D1 and fail before partial persistence. Use `POCKETFLARE_DB_MODE="do_sqlite"` for apps that need upstream SQLite transaction semantics.
+- D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported by D1 and fail before partial persistence. This is a Cloudflare platform constraint, not an open Pocketflare implementation gap. Use `POCKETFLARE_DB_MODE="do_sqlite"` for apps that need upstream SQLite transaction semantics.
 - D1 migrations are statement-by-statement instead of wrapped in one outer transaction. This lets upstream PocketBase migrations run on D1, but a failed migration can leave partial schema/data changes; retry on a fresh target or use DO SQLite when migration rollback semantics matter.
+- D1 collection import with interdependent new view collections is not implemented until its E2E proof is green. Use DO SQLite for that path.
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
-- R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
+- R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback is runtime-proven up to 20 MiB; `CopyObject` still needs a credentialed proof run.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
-- [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection.
-- Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker.
-- SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
+- [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this state is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection.
+- Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker. The trigger calls `pb.Cron().RunDue()`, so the due-job selection is PocketBase's scheduler even though the wakeup source is Cloudflare.
+- SMTP sockets have live Amazon SES STARTTLS proof only. Other providers can still vary by port, TLS mode, and auth behavior.
 - [PocketBase] upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native backup primitives for production backups. Pocketflare supports restoring [PocketBase] backup zips into empty targets for migration.
 
 ## Cloudflare Limits

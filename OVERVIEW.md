@@ -107,7 +107,7 @@ Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. 
 2. `POCKETFLARE_MAIL_WEBHOOK_URL`: legacy generic webhook mode.
 3. PocketBase admin SMTP settings, delivered through the Workers sockets SMTP transport.
 
-SMTP over Workers sockets has live Amazon SES STARTTLS proof on port 587. Other providers can still vary by port, TLS mode, and auth behavior. Workers block outbound port 25.
+SMTP over Workers sockets has live proof only with Amazon SES STARTTLS on port 587. Other providers can still vary by port, TLS mode, and auth behavior. Workers block outbound port 25.
 
 The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md`.
 
@@ -119,7 +119,7 @@ The standard PocketBase file API still proxies uploads and downloads through Poc
 
 Uploads use a chunked R2 multipart writer: PocketBase receives the file through the API, the adapter buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
 
-Copies are separate from uploads. They happen only when PocketBase's filesystem `Copy(src, dst)` method duplicates an existing object. With optional R2 API credentials, that operation uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker. Large-copy fallback still needs runtime proof.
+Copies are separate from uploads. They happen only when PocketBase's filesystem `Copy(src, dst)` method duplicates an existing object. With optional R2 API credentials, that operation uses server-side S3 `CopyObject`, which still needs a credentialed runtime proof. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker and is runtime-proven up to 20 MiB.
 
 ## Migrating Existing PocketBase Projects
 
@@ -185,11 +185,11 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 - **D1 transactions:** Pocketflare maps fixed write transactions to `D1Database.batch()`, which executes statements sequentially as a SQL transaction and rolls back the entire sequence on failure. Reads after queued writes fail deterministically before any partial persistence. Reads before writes are direct (non-isolated). D1 migrations run statement-by-statement because older PocketBase migrations read their own writes. See `docs/D1-COMPATIBILITY.md` for the full feature matrix.
 - **DO SQLite mode:** `POCKETFLARE_DB_MODE=do_sqlite` routes dynamic requests through `APP_DO`, a SQLite-backed Durable Object. This provides callback-scoped transactions with read-your-writes semantics. Tradeoff: the app database moves from D1 to a single Durable Object with different latency, cost, storage limit, and scaling characteristics.
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are possible app-level optimizations, not required for PocketBase API compatibility.
-- R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured. The Worker relay fallback and scaffolded bucket-name configuration need runtime proof before large-copy claims.
+- R2 filesystem Copy uses server-side S3 `CopyObject` when optional R2 API credentials are configured; that path still needs a credentialed runtime proof. The Worker relay fallback is runtime-proven up to 20 MiB and does not hold the whole copied object in Go memory.
 - Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
-- PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()` to execute due jobs.
-- SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior.
-- PocketBase upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native primitives (D1 Time Travel/export, R2 object copy) for production backups. PocketBase backup zips can be restored into empty Pocketflare targets for migration. See `docs/production-backups.md` for the full backup strategy, supported recovery paths, and limitations.
+- PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()`, so due-job selection remains PocketBase's scheduler.
+- SMTP sockets have live Amazon SES STARTTLS proof only. Other providers can still vary by port, TLS mode, and auth behavior.
+- PocketBase upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native primitives (D1 Time Travel/export, R2 object copy) for production backups. PocketBase backup zips can be restored into empty Pocketflare targets for migration; the checked-in proof covers a small fixture, while large backup zips still need scale proof. See `docs/production-backups.md` for the full backup strategy, supported recovery paths, and limitations.
 
 ## References
 

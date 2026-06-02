@@ -39,10 +39,10 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 
 | Feature | Fix |
 |---|---|
-| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch |
+| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch. A single import that creates interdependent new views is not yet E2E-proven. |
 | Field type conversions (single↔multiple) | View definitions pre-fetched outside the write transaction and passed to `normalizeSingleVsMultipleFieldChanges`; no more `sqlite_master` query after ALTER TABLE |
-| Recursive/multi-level cascade deletes | BFS traversal of entire cascade graph collects all records across all depths before any writes; `skipCascadeDelete` flag prevents re-entrant cascade |
-| SQL statement splitter hardening | Rune-based state machine respects string literals, blob literals, line comments, and block comments — semicolons inside those constructs are no longer treated as statement boundaries |
+| Recursive/multi-level cascade deletes | BFS traversal carries the target record for each level, so grandchildren are deleted against their parent id rather than the root id; `skipCascadeDelete` prevents re-entrant cascade |
+| SQL route hardening | Rune-based statement splitter respects string literals, blob literals, line comments, and block comments; mixed read/write batches are rejected before a write can run |
 | Restore resume / start-over | UI handles active restore session detection, resume from interrupted phase, and cancel with clear guardrails |
 
 ### Confirmed D1-compatible (no patch needed)
@@ -105,15 +105,14 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 | Batch atomicity | `scripts/e2e-test.sh` §8 | D1 + DO SQLite remote | None known |
 | Sequential health stability | `scripts/e2e-test.sh` §10 | D1 + DO SQLite remote | Cold-start after deploy not covered |
 | Cascade deletes (single-level) | `scripts/e2e-test.sh` §9 (implicit via collection delete) | D1 + DO SQLite remote | None known |
-| Cascade deletes (multi-level) | No dedicated proof | — | Depth > 2 not proven; add a fixture with 3+ cascade levels |
-| Collection import with views | No dedicated proof | — | Large import with many interdependent views not proven |
-| Raw SQL route | No dedicated proof | — | Statement splitter tested only via unit-level review of 014 state machine |
+| Cascade deletes (multi-level) | `scripts/proof-d1-edge-fixtures.sh` §1 | D1 local (wrangler dev) | Needs remote/deployed replay before treating as production-proven |
+| Collection import with interdependent new views | `scripts/proof-d1-edge-fixtures.sh` §3 | D1 local (wrangler dev) | Red: import is canceled by the Workers runtime; treat as unimplemented until green |
+| Raw SQL route | `scripts/proof-d1-edge-fixtures.sh` §2 | D1 local (wrangler dev) | Needs remote/deployed replay before treating as production-proven |
 
 ### Next Proofs To Add
 
-- Multi-level cascade delete fixture with at least three cascade depths.
-- Collection import fixture with interdependent views.
-- Raw SQL route behavioral proof for statement splitting across strings, blob literals, line comments, and block comments.
+- Deployed replay of the D1 edge fixture script.
+- Fix and prove collection import with interdependent new views.
 
 ## DO SQLite: Full-Compatibility Path
 

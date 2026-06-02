@@ -42,6 +42,7 @@ export class RealtimeDO {
     const encoder = new TextEncoder();
 
     this.connections.set(clientId, { writer, type: "sse" });
+    console.log({ family: "pocketflare-realtime", phase: "connect", clientId });
 
     request.signal.addEventListener("abort", () => {
       this.connections.delete(clientId);
