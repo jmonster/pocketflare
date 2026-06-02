@@ -16,6 +16,10 @@ func deleteRestoreMarker() error {
 	return nil
 }
 
+func writeRestoreMarkerOnlyIfNew(marker *RestoreMarker) error {
+	return nil
+}
+
 func hasStorageObjects(app core.App) bool {
 	return false
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 )
+
+var ErrRestoreMarkerExists = errors.New("restore marker already exists")
 
 // RestoreMarker is the durable restore session state stored in R2.
 type RestoreMarker struct {
@@ -42,6 +45,12 @@ type RestoreFileProgress struct {
 func registerPocketflareRestoreRoutes(app core.App, rg *router.RouterGroup[*core.RequestEvent], dbMode string) {
 	sub := rg.Group("/pocketflare/restore")
 	sub.GET("/status", restoreStatus(dbMode)).Bind(apis.RequireSuperuserAuth())
+	sub.GET("/session", restoreSessionStatus).Unbind(
+		apis.DefaultRequireAuthMiddlewareId,
+		apis.DefaultRequireSuperuserAuthMiddlewareId,
+		apis.DefaultRequireSuperuserOrOwnerAuthMiddlewareId,
+		apis.DefaultRequireSameCollectionContextAuthMiddlewareId,
+	)
 	sub.POST("/start", restoreStart(dbMode)).Bind(apis.RequireSuperuserAuth())
 	// Restore-session routes must not inherit PocketBase auth middleware once the
 	// system auth tables have been cleared by the restore.
@@ -107,11 +116,13 @@ func checkEmptyTarget(app core.App) []string {
 				reasons = append(reasons, "non-system collection exists: "+c.Name)
 			}
 		}
-	}
-
-	marker, err := readRestoreMarker()
-	if err == nil && marker != nil {
-		reasons = append(reasons, "active restore in progress (phase: "+marker.Phase+")")
+		// Check if the users collection has real records.
+		if _, err := app.FindCollectionByNameOrId("users"); err == nil {
+			var count int
+			if err := app.DB().NewQuery("SELECT COUNT(*) FROM [users]").Row(&count); err == nil && count > 0 {
+				reasons = append(reasons, fmt.Sprintf("users collection contains %d record(s)", count))
+			}
+		}
 	}
 
 	if hasStorageObjects(app) {
@@ -148,7 +159,18 @@ func restoreStart(dbMode string) func(*core.RequestEvent) error {
 			FileUploadToken: fileUploadToken,
 		}
 
-		if err := writeRestoreMarker(marker); err != nil {
+		if err := writeRestoreMarkerOnlyIfNew(marker); err != nil {
+			if err == ErrRestoreMarkerExists {
+				existing, readErr := readRestoreMarker()
+				if readErr == nil && existing != nil {
+					return e.JSON(http.StatusConflict, map[string]any{
+						"error":     "active restore session already exists",
+						"sessionId": existing.SessionID,
+						"phase":     existing.Phase,
+						"progress":  existing,
+					})
+				}
+			}
 			return e.InternalServerError("failed to write restore marker", err)
 		}
 
@@ -390,7 +412,7 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 			return e.BadRequestError("cannot finalize in phase: "+marker.Phase, nil)
 		}
 
-		// All three reloads must succeed. If any fail, return an error
+		// All reloads must succeed. If any fail, return an error
 		// and keep the marker so the operator can diagnose and retry.
 		if err := e.App.ReloadCachedCollections(); err != nil {
 			return e.InternalServerError("failed to reload collections after restore", err)
@@ -398,8 +420,23 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 		if err := e.App.ReloadSettings(); err != nil {
 			return e.InternalServerError("failed to reload settings after restore", err)
 		}
+		// Re-bootstrap the app with the restored data. ResetBootstrapState closes
+		// existing connections and nils DB builders; Bootstrap re-initializes
+		// everything including migrations, collections, and settings.
 		if err := e.App.ResetBootstrapState(); err != nil {
 			return e.InternalServerError("failed to reset bootstrap state after restore", err)
+		}
+		// The app was booted with SkipSystemMigrations because the restore marker
+		// existed. Now that the restore is complete, clear the flag so Bootstrap
+		// applies system migrations to the restored data.
+		e.App.SetSkipSystemMigrations(false)
+		if err := e.App.Bootstrap(); err != nil {
+			e.App.Logger().Error(
+				"restore finalize: Bootstrap failed after ResetBootstrapState; "+
+					"marker preserved in R2 for retry on next cold start",
+				"error", err.Error(),
+			)
+			return e.InternalServerError("failed to re-bootstrap after restore; retry on next cold start", err)
 		}
 
 		if err := deleteRestoreMarker(); err != nil {
@@ -411,6 +448,23 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 			Note: "Current session may be invalid. Log in with restored superuser credentials.",
 		})
 	}
+}
+
+// ── GET /api/pocketflare/restore/session ─────────────────────────────────
+
+func restoreSessionStatus(e *core.RequestEvent) error {
+	marker, err := requireRestoreToken(e)
+	if err != nil {
+		return err
+	}
+	return e.JSON(http.StatusOK, map[string]any{
+		"sessionId":       marker.SessionID,
+		"phase":           marker.Phase,
+		"startedAt":       marker.StartedAt,
+		"dbProgress":      marker.DBProgress,
+		"fileProgress":    marker.FileProgress,
+		"fileUploadToken": marker.FileUploadToken,
+	})
 }
 
 func requireRestoreToken(e *core.RequestEvent) (*RestoreMarker, error) {

@@ -91,6 +91,38 @@ func deleteRestoreMarker() error {
 	return err
 }
 
+func writeRestoreMarkerOnlyIfNew(marker *RestoreMarker) error {
+	bucket := cloudflare.GetBinding("STORAGE")
+	if bucket.IsUndefined() || bucket.IsNull() {
+		return nil
+	}
+
+	data := markerToJSON(marker)
+	ua := js.Global().Get("Uint8Array").New(len(data))
+	js.CopyBytesToJS(ua, data)
+
+	putOpts := js.Global().Get("Object").New()
+	httpMeta := js.Global().Get("Object").New()
+	httpMeta.Set("contentType", "application/json")
+	putOpts.Set("httpMetadata", httpMeta)
+
+	onlyIf := js.Global().Get("Object").New()
+	onlyIf.Set("etagDoesNotMatch", "*")
+	putOpts.Set("onlyIf", onlyIf)
+
+	promise := bucket.Call("put", restoreMarkerKey, ua.Get("buffer"), putOpts)
+	result, err := jsutil.AwaitPromise(context.Background(), promise)
+	if err != nil {
+		return err
+	}
+	// R2 put() with onlyIf returns null when the precondition (etagDoesNotMatch) fails,
+	// meaning the key already exists.
+	if result.IsNull() {
+		return ErrRestoreMarkerExists
+	}
+	return nil
+}
+
 func hasStorageObjects(app core.App) bool {
 	bucket := cloudflare.GetBinding("STORAGE")
 	if bucket.IsUndefined() || bucket.IsNull() {

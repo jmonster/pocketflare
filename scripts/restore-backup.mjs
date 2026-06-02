@@ -25,9 +25,31 @@ const UI_NODE_MODULES = resolve(__dirname, "../internal/pocketbase/ui/node_modul
 const D1_MAX_BOUND_PARAMS = 100;
 const FILE_UPLOAD_CONCURRENCY = 3;
 
+const MIME_TYPES = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  json: "application/json",
+  html: "text/html",
+  css: "text/css",
+  js: "text/javascript",
+};
+
+function detectMime(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot === -1) return "application/octet-stream";
+  const ext = name.slice(dot + 1).toLowerCase();
+  return MIME_TYPES[ext] || "application/octet-stream";
+}
+
 function usage() {
   console.error("Usage: node scripts/restore-backup.mjs <worker-url> <backup.zip> --token <superuser-token>");
   console.error("       node scripts/restore-backup.mjs <worker-url> <backup.zip> --email <email> --password <password>");
+  console.error("       node scripts/restore-backup.mjs <worker-url> <backup.zip> --restore-token <token>");
   process.exit(2);
 }
 
@@ -35,12 +57,14 @@ async function main() {
   const args = process.argv.slice(2);
 
   let workerURL, zipPath, token, email, password;
+  let restoreToken;
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       case "--token": token = args[++i]; break;
       case "--email": email = args[++i]; break;
       case "--password": password = args[++i]; break;
+      case "--restore-token": restoreToken = args[++i]; break;
       case "-h": case "--help": usage(); break;
       default:
         if (!workerURL) workerURL = args[i];
@@ -49,8 +73,8 @@ async function main() {
   }
 
   if (!workerURL || !zipPath) usage();
-  if (!token && (!email || !password)) {
-    console.error("Error: provide --token or --email/--password for authentication.");
+  if (!restoreToken && !token && (!email || !password)) {
+    console.error("Error: provide --restore-token, --token, or --email/--password for authentication.");
     usage();
   }
 
@@ -72,31 +96,53 @@ async function main() {
     process.exit(1);
   }
 
-  if (!token) {
+  if (!token && !restoreToken) {
     token = await authenticate(workerURL, email, password);
   }
 
-  const api = makeAPI(workerURL, token);
+  const api = makeAPI(workerURL, token || "");
 
-  // ── Phase 1: Check status ──
-  log("Checking target status...");
-  const status = await api.get("/api/pocketflare/restore/status");
+  // ── Phase 1: Resume with restore token or check status ──
+  let sessionId, fileUploadToken;
+  let importPhase = "database";
 
-  if (!status.empty) {
-    log("ERROR: Target is not empty.");
-    for (const reason of status.blockingReasons) {
-      log("  - " + reason);
+  if (restoreToken) {
+    api.setRestoreToken(restoreToken);
+    log("Resuming restore session...");
+    const sessionInfo = await api.get("/api/pocketflare/restore/session");
+    sessionId = sessionInfo.sessionId;
+    fileUploadToken = restoreToken;
+    importPhase = sessionInfo.phase;
+    log("Resuming session " + sessionId + " (phase: " + importPhase + ").");
+  } else {
+    // ── Check status ──
+    log("Checking target status...");
+    const status = await api.get("/api/pocketflare/restore/status");
+
+    if (status.activeRestore) {
+      log("Active restore session exists (phase: " + status.activeRestore.phase + ").");
+      log("Use --restore-token <token> to resume it.");
+      process.exit(1);
     }
-    process.exit(1);
+
+    if (!status.empty) {
+      log("ERROR: Target is not empty.");
+      for (const reason of status.blockingReasons) {
+        log("  - " + reason);
+      }
+      process.exit(1);
+    }
+
+    log("Target is " + (status.empty ? "empty" : "not empty") + ". DB mode: " + status.dbMode);
+
+    // ── Start new session ──
+    log("Starting restore session...");
+    const start = await api.post("/api/pocketflare/restore/start", {});
+    sessionId = start.sessionId;
+    fileUploadToken = start.fileUploadToken;
+    api.setRestoreToken(fileUploadToken);
+    log("Restore token: " + fileUploadToken);
   }
-
-  if (status.activeRestore) {
-    log("WARNING: Active restore session exists (phase: " + status.activeRestore.phase + ").");
-  }
-
-  log("Target is empty. DB mode: " + status.dbMode);
-
-  // ── Phase 2: Read and validate backup zip before starting session ──
   log("Reading backup zip...");
   const zipData = readFileSync(zipPath);
   const zip = await JSZip.loadAsync(Buffer.from(zipData));
@@ -110,38 +156,35 @@ async function main() {
   const auxDbEntry = zip.file("auxiliary.db");
   const storageEntries = zip.file(/^storage\//);
 
-  // ── Phase 3: Start restore session (zip validated) ──
-  log("Starting restore session...");
-  const start = await api.post("/api/pocketflare/restore/start", {});
-  const sessionId = start.sessionId;
-  const fileUploadToken = start.fileUploadToken;
-  api.setRestoreToken(fileUploadToken);
+  // ── Phase 2: Import database (skip if already at "files" phase) ──
+  if (importPhase !== "files") {
+    const SQL = await initSqlJs();
+    const dataBuf = await dataDbEntry.async("arraybuffer");
+    const dataDB = new SQL.Database(new Uint8Array(dataBuf));
 
-  // ── Phase 4: Import database ──
-  const SQL = await initSqlJs();
-  const dataBuf = await dataDbEntry.async("arraybuffer");
-  const dataDB = new SQL.Database(new Uint8Array(dataBuf));
+    let auxDB = null;
+    if (auxDbEntry) {
+      const auxBuf = await auxDbEntry.async("arraybuffer");
+      auxDB = new SQL.Database(new Uint8Array(auxBuf));
+    }
 
-  let auxDB = null;
-  if (auxDbEntry) {
-    const auxBuf = await auxDbEntry.async("arraybuffer");
-    auxDB = new SQL.Database(new Uint8Array(auxBuf));
+    log("Preparing database import...");
+
+    try {
+      await importDatabase(api, dataDB, auxDB, sessionId);
+    } finally {
+      dataDB.close();
+      if (auxDB) auxDB.close();
+    }
+
+    // Transition phase: database → files so the Worker accepts uploads.
+    log("Transitioning to files phase...");
+    await api.post("/api/pocketflare/restore/phase", { sessionId, phase: "files" });
+  } else {
+    log("Skipping database import (phase already " + importPhase + ").");
   }
 
-  log("Preparing database import...");
-
-  try {
-    await importDatabase(api, dataDB, auxDB, sessionId);
-  } finally {
-    dataDB.close();
-    if (auxDB) auxDB.close();
-  }
-
-  // Transition phase: database → files so the Worker accepts uploads.
-  log("Transitioning to files phase...");
-  await api.post("/api/pocketflare/restore/phase", { sessionId, phase: "files" });
-
-  // ── Phase 5: Upload files ──
+  // ── Phase 3: Upload files ──
   if (storageEntries.length > 0) {
     log(`Uploading ${storageEntries.length} storage files...`);
     let done = 0;
@@ -151,7 +194,8 @@ async function main() {
     async function uploadOne(entry) {
       const blob = await entry.async("nodebuffer");
       const key = entry.name;
-      await uploadFile(workerURL, fileUploadToken, key, blob);
+      const contentType = detectMime(key);
+      await uploadFile(workerURL, fileUploadToken, key, blob, contentType);
       done++;
       if (done % 10 === 0 || done === total) {
         log(`  Files: ${done}/${total}`);
@@ -170,7 +214,7 @@ async function main() {
     log("File upload complete.");
   }
 
-  // ── Phase 6: Finalize ──
+  // ── Phase 4: Finalize ──
   log("Finalizing restore...");
   const finalize = await api.post("/api/pocketflare/restore/finalize", { sessionId });
   log("Restore complete.");
@@ -332,13 +376,13 @@ function tableDBName(dataDB, auxDB, tableName) {
 
 // ── File upload ──
 
-async function uploadFile(workerURL, fileUploadToken, key, data) {
+async function uploadFile(workerURL, fileUploadToken, key, data, contentType) {
   const resp = await fetch(`${workerURL}/api/pocketflare/restore/files`, {
     method: "PUT",
     headers: {
       "X-Pocketflare-File-Key": key,
       "X-Pocketflare-Restore-Token": fileUploadToken,
-      "Content-Type": "application/octet-stream",
+      "Content-Type": contentType || "application/octet-stream",
     },
     body: data,
   });

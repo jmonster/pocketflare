@@ -6,6 +6,10 @@
     "build": "make build",
     "check:pb-version": "node scripts/check-pb-version.mjs",
     "deploy": "make deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "test:e2e:restore-ui": "playwright test tests/e2e/restore-start-over.spec.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
   }
 }
