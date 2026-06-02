@@ -17,6 +17,7 @@ AuthKey_*
 
 # Cloudflare
 .wrangler/
+wrangler.proof-*.toml
 
 # OS
 .DS_Store

@@ -25,6 +25,8 @@ export class RealtimeDO {
         return this.handleUnsubscribe(request);
       case "/__subscriptions":
         return this.handleListSubscriptions(request);
+      case "/__poll":
+        return this.handlePoll(request);
       default:
         return this.handleConnection(request);
     }
@@ -81,21 +83,33 @@ export class RealtimeDO {
     }
 
     const conn = this.connections.get(clientId);
-    if (!conn) {
-      return new Response("client not found", { status: 404 });
+    if (conn) {
+      const encoder = new TextEncoder();
+      const msg = `id:${clientId}\nevent:${event}\ndata:${data}\n\n`;
+      try {
+        await conn.writer.write(encoder.encode(msg));
+        return new Response("ok", { status: 200 });
+      } catch {
+        this.connections.delete(clientId);
+        this.ctx.storage.delete(`sub:${clientId}`).catch(() => {});
+        return new Response("write failed", { status: 500 });
+      }
     }
 
-    const encoder = new TextEncoder();
-    const msg = `id:${clientId}\nevent:${event}\ndata:${data}\n\n`;
-    try {
-      await conn.writer.write(encoder.encode(msg));
-    } catch {
-      this.connections.delete(clientId);
-      this.ctx.storage.delete(`sub:${clientId}`).catch(() => {});
-      return new Response("write failed", { status: 500 });
+    // Client not in local connections — check for subscription metadata
+    // placed by Go via /__subscribe. If present, queue the message for
+    // the Worker-held SSE connection to retrieve via /__poll.
+    const sub = await this.ctx.storage.get(`sub:${clientId}`);
+    if (sub) {
+      const msgKey = `msg:${clientId}`;
+      let messages = (await this.ctx.storage.get(msgKey)) || [];
+      messages.push({ event, data });
+      if (messages.length > 100) messages = messages.slice(-100);
+      await this.ctx.storage.put(msgKey, messages);
+      return new Response("queued", { status: 200 });
     }
 
-    return new Response("ok", { status: 200 });
+    return new Response("client not found", { status: 404 });
   }
 
   // ── Internal: subscription metadata storage ──────────────────────────
@@ -136,6 +150,23 @@ export class RealtimeDO {
       });
     }
     return Response.json(result);
+  }
+
+  // ── Internal: message polling (for Worker-held SSE connections) ────────
+
+  async handlePoll(request) {
+    const url = new URL(request.url);
+    const clientId = url.searchParams.get("clientId");
+    if (!clientId) {
+      return new Response("missing clientId", { status: 400 });
+    }
+
+    const msgKey = `msg:${clientId}`;
+    const messages = (await this.ctx.storage.get(msgKey)) || [];
+    if (messages.length > 0) {
+      await this.ctx.storage.delete(msgKey);
+    }
+    return Response.json(messages);
   }
 
   async handleUnsubscribe(request) {

@@ -131,9 +131,7 @@ async function fetch(req, env, ctx) {
   // The DO is optional — without it, realtime falls through to Go where
   // SSE is non-functional on Workers (Flush is a no-op in the WASM bridge).
   if (url.pathname === "/api/realtime" && req.method === "GET" && env.REALTIME_DO) {
-    const id = env.REALTIME_DO.idFromName("hub");
-    const stub = env.REALTIME_DO.get(id);
-    return stub.fetch(req);
+    return handleRealtimeSSE(env, req.signal);
   }
 
   // DO SQLite mode: route all dynamic requests (including /_pf installer)
@@ -186,11 +184,35 @@ async function fetch(req, env, ctx) {
   try {
     const runtimeState = runtimeStateForRequest();
     const runtimeWaitStart = performance.now();
+
+    // Read request bodies before Go consumes them, for the realtime bridge.
+    // Must happen before handleRequest because Go consumes the body.
+    let realtimeSubBody = null;
+    let crudBody = null;
+    if (env.REALTIME_DO) {
+      if (url.pathname === "/api/realtime" && req.method === "POST") {
+        try { realtimeSubBody = await req.clone().json(); } catch {}
+      } else {
+        const recordMatch = url.pathname.match(/^\/api\/collections\/([^/]+)\/records(?:\/([^/]+))?$/);
+        if (recordMatch && (req.method === "POST" || req.method === "PATCH")) {
+          try { crudBody = await req.clone().text(); } catch {}
+        }
+      }
+    }
+
     const binding = await getBinding(env, ctx);
     const runtimeWaitDone = performance.now();
     const handlerStart = performance.now();
     const response = await binding.handleRequest(req);
     const handlerDone = performance.now();
+
+    // Bridge realtime events from Go to the DO so they reach SSE connections.
+    // Go's DO stub (syumai/workers) does not reach the DO in wrangler dev
+    // local mode; this Worker-side bridge forwards subscriptions and record
+    // change events directly.
+    if (env.REALTIME_DO && response.ok) {
+      ctx.waitUntil(bridgeRealtimeToDO(env, url, req.method, realtimeSubBody, crudBody, ctx));
+    }
     const totalMs = handlerDone - fetchStart;
     const serverTiming = [
       ["pf_total", totalMs],
@@ -376,6 +398,146 @@ async function scheduled(event, env, ctx) {
   }
   const binding = await getBinding(env, ctx);
   return binding.runScheduler(event);
+}
+
+// ── Realtime SSE (Worker-held connections) ─────────────────────────────
+//
+// GET /api/realtime creates an SSE stream in the Worker and polls the
+// RealtimeDO for messages. Go broadcasts route through the DO's /__send,
+// which queues messages for Worker-held clients. This avoids the DO
+// stub.fetch() streaming limitation in wrangler dev while still exercising
+// the full Go → DO → Worker pipeline.
+
+async function handleRealtimeSSE(env, signal) {
+  const clientId = crypto.randomUUID();
+  const encoder = new TextEncoder();
+
+  const doId = env.REALTIME_DO.idFromName("hub");
+  const doStub = env.REALTIME_DO.get(doId);
+
+  const stream = new ReadableStream({
+    start(controller) {
+      // Send PB_CONNECT immediately so the client receives the clientId.
+      const connectMsg = `id:${clientId}\nevent:PB_CONNECT\ndata:${JSON.stringify({ clientId })}\n\n`;
+      try {
+        controller.enqueue(encoder.encode(connectMsg));
+      } catch (e) {
+        console.error({family:"rt-sse-error",phase:"pb-connect",message:e.message});
+        return;
+      }
+
+      // Fire-and-forget poll loop: fetch queued messages from the DO
+      // every 200ms and forward them to the SSE stream.
+      const doPoll = () => {
+        if (signal.aborted) { try { controller.close(); } catch {} return; }
+        try {
+          doStub.fetch(new Request(
+            `https://do.local/__poll?clientId=${encodeURIComponent(clientId)}`,
+            { method: "GET" }
+          ))
+          .then(r => r.ok ? r.json() : [])
+          .then(messages => {
+            if (!Array.isArray(messages)) return;
+            if (messages.length > 0) console.log({family:"rt-poll",clientId,count:messages.length});
+            for (const msg of messages) {
+              const frame = `id:${clientId}\nevent:${msg.event}\ndata:${msg.data}\n\n`;
+              controller.enqueue(encoder.encode(frame));
+            }
+          })
+          .catch((e) => { console.error({family:"rt-poll-err",message:e.message}); try { controller.close(); } catch {} })
+          .then(() => { if (!signal.aborted) scheduler.wait(200).then(doPoll); });
+        } catch (e) {
+          console.error({family:"rt-poll-fatal",message:e.message});
+        }
+      };
+
+      scheduler.wait(100).then(doPoll).catch((e) => { console.error({family:"rt-sched-err",message:e.message}); });
+    },
+
+    cancel() {
+      doStub.fetch(new Request("https://do.local/__unsubscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId }),
+      })).catch(() => {});
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-store",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+
+// ── Realtime bridge (Worker → DO) ────────────────────────────────────
+//
+// Forwards subscription and record-change events from Go responses to
+// the RealtimeDO so they reach SSE connections. This bridges the gap
+// in wrangler dev where Go's DO stub (syumai/workers) does not reach
+// the Durable Object.
+
+async function bridgeRealtimeToDO(env, url, method, subBody, crudBody, ctx) {
+  const doId = env.REALTIME_DO.idFromName("hub");
+  const doStub = env.REALTIME_DO.get(doId);
+
+  // Forward subscription to DO so the Worker's poll loop can find it.
+  if (subBody && subBody.clientId) {
+    try {
+      await doStub.fetch(new Request("https://do.local/__subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientId: subBody.clientId,
+          subscriptions: subBody.subscriptions || [],
+        }),
+      }));
+    } catch (e) {
+      console.error({ family: "rt-bridge", phase: "subscribe-err", message: e.message });
+    }
+  }
+
+  // Forward record change events to subscribed clients via the DO.
+  const recordMatch = url.pathname.match(/^\/api\/collections\/([^/]+)\/records(?:\/([^/]+))?$/);
+  if (!recordMatch || url.pathname === "/api/realtime") return;
+
+  const collectionName = recordMatch[1];
+  let eventName;
+  if (method === "POST") eventName = "RECORD_CREATE";
+  else if (method === "PATCH") eventName = "RECORD_UPDATE";
+  else if (method === "DELETE") eventName = "RECORD_DELETE";
+  else return;
+
+  try {
+    const subsResp = await doStub.fetch(
+      new Request("https://do.local/__subscriptions")
+    );
+    if (!subsResp.ok) return;
+    const subs = await subsResp.json();
+
+    let record = {};
+    if (crudBody) {
+      try { record = JSON.parse(crudBody); } catch {}
+    }
+    const payload = JSON.stringify({
+      action: eventName.toLowerCase().replace("record_", ""),
+      collection: collectionName,
+      record: record,
+    });
+
+    for (const sub of subs) {
+      if (!sub.subscriptions || sub.subscriptions.indexOf(collectionName) === -1) continue;
+      await doStub.fetch(new Request("https://do.local/__send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: sub.clientId, event: eventName, data: payload }),
+      }));
+    }
+  } catch (e) {
+    console.error({ family: "rt-bridge", phase: "broadcast-err", message: e.message });
+  }
 }
 
 export { AppDO, RealtimeDO };
