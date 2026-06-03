@@ -3,7 +3,7 @@
 #
 # Starts wrangler dev, waits for WASM boot, hits /api/health, then runs a
 # collection field flip (multi→single→multi) to exercise the
-# normalizeSingleVsMultipleFieldChanges path patched in 014-d1-parity-fixes.
+# normalizeSingleVsMultipleFieldChanges path patched in 017-d1-parity-fixes.
 #
 # Usage:
 #   ./scripts/proof-d1-bootstrap.sh
@@ -145,7 +145,7 @@ else
     green "  Authenticated as $ADMIN_EMAIL"
 fi
 
-# ── 5. Collection field flip (exercises patch 014 path) ──
+# ── 5. Collection field flip (exercises patch 017 path) ──
 echo "── 5. Collection field flip ──"
 
 FIELD_FLIP_LOG_START=$(( $(wc -l < "$ARTIFACT_DIR/dev.log") + 1 ))

@@ -107,18 +107,29 @@ Cloudflare's default static-asset routing can serve matching files without Worke
 
 ## PocketBase Patch Set
 
-Managed by `scripts/update-pb.sh` against PocketBase v0.39.0:
+Managed by `scripts/update-pb.sh` against PocketBase v0.39.1. 17 patches.
 
-| Patch | Purpose |
-|---|---|
-| `001-bootstrap-wasm.patch` | Split OS data-dir and fsnotify behavior into build-tagged files; WASM no-ops unsupported filesystem setup. |
-| `002-filesystem-wasm.patch` | Add injectable WASM filesystem constructors used by the adapter for R2. |
-| `003-nil-body-fix.patch` | Guard nil request bodies from Workers GET requests. |
-| `004-filesystem-newblob.patch` | Add `filesystem.NewBlob(blob.Driver)` for R2-backed storage. |
-| `005-cron-rundue.patch` | Expose cron due-run behavior needed by the Worker scheduled handler. |
-| `006-realtime-wasm.patch` | Allow the Worker WebSocket/Durable Object bridge to provide realtime clients. |
-| `007-defaultclient-setid.patch` | Let the realtime bridge preserve PocketBase subscription client ids. |
-| `008-pocketflare-admin-ui.patch` | Apply Pocketflare admin UI branding and replace upstream S3 settings with R2/D1 guidance. |
+| Patch | Purpose | Upstream? |
+|---|---|---|
+| `000-base-wasm-stubs.patch` | Build-tag split of data-dir and fsnotify into `_unix.go`/`_wasm.go` stubs. | No |
+| `001-bootstrap-wasm.patch` | Split OS data-dir and filesystem setup from `Bootstrap()` into build-tagged methods. | No |
+| `002-filesystem-wasm.patch` | Injectable WASM filesystem constructors used by the adapter for R2. | No |
+| `003-nil-body-fix.patch` | Guard nil `ReadCloser` from Workers GET requests in `RereadableReadCloser`. | Yes |
+| `004-filesystem-newblob.patch` | Add `filesystem.NewBlob(blob.Driver)` for R2-backed storage. | Yes |
+| `005-cron-rundue.patch` | Expose `RunDue()` for external cron trigger integrations. | Yes |
+| `006-realtime-wasm.patch` | `WasmRealtimeClientProvider` for Worker WebSocket/Durable Object bridge. | No |
+| `007-defaultclient-setid.patch` | `SetId()` on DefaultClient for external client managers. | Yes |
+| `008-pocketflare-branding.patch` | Pocketflare admin UI branding: accent color, logo, CSS, version suffix. | No |
+| `009-idempotent-migrations.patch` | `CREATE TABLE IF NOT EXISTS` and `SaveNoValidate` for D1 re-bootstrap resilience. | Partial |
+| `010-d1-transaction-compat.patch` | D1 batch transaction workarounds: precompute outside tx, cascade before delete, split SQL. | No |
+| `011-do-sqlite-transaction-hook.patch` | `RunInTransactionHook` for DO SQLite `ctx.storage.transactionSync()`. | No |
+| `012-d1-migrations-without-outer-tx.patch` | `RunMigrationsWithoutTransaction` flag for D1 batch migration runner. | No |
+| `013-active-restore-bootstrap.patch` | `SkipSystemMigrations` config for active restore against half-restored databases. | No |
+| `015-restore-feature.patch` | Backup restore UI: `pocketflareRestore.js`, JSZip, sql.js WASM. | No |
+| `016-storage-settings.patch` | Replace upstream S3 settings form with R2/D1 guidance text. | No |
+| `017-d1-parity-fixes.patch` | D1 parity: collection import view caching, multi-level cascade deletes, SQL route hardening, restore resume/start-over. | No |
+
+**Upstream?** column: Yes = could be proposed to PocketBase (no platform assumptions). No = Pocketflare-specific platform constraint. Partial = mix of both.
 
 Keep durable source edits in this checkout. Do not edit generated `internal/pocketbase/` as the lasting fix; edit patches and rerun `scripts/update-pb.sh`.
 
@@ -137,10 +148,10 @@ for patch in ../../patches/*.patch; do git apply "$patch"; done
 
 Only after the patch stack applies cleanly should `internal/pocketbase/` be replaced or regenerated. Preserve the previous generated tree under `.artifacts/` if it helps compare behavior; do not edit it as durable source.
 
-Patch notes from the v0.39.0 bump:
+Patch notes from the v0.39.1 bump:
 - Upstream added `core/notify_watcher.go`; the WASM patch must build-tag that file out and provide `notify_watcher_wasm.go`, not duplicate `registerNotifyWatcherHooks` in `base_wasm.go`.
 - The admin UI is JS modules in `ui/src`, not the older Svelte layout. Patch `ui/src/...`, run `pnpm install` and `pnpm run build` from `internal/pocketbase/ui`, then sync `ui/dist/` into `admin-ui/_`.
-- If `008-pocketflare-admin-ui.patch` adds binary assets such as `ui/public/images/logo.png`, regenerate it with `git diff --binary` and verify the patch applies from a fresh clone. Do not run blanket whitespace cleanup over binary patch hunks; it can corrupt the `GIT binary patch` terminator.
+- If any branding or feature patch adds binary assets (e.g. `ui/public/images/logo.png` in 008, `ui/public/assets/sql-wasm-browser.wasm` in 015), regenerate it with `git diff --binary` and verify the patch applies from a fresh clone. Do not run blanket whitespace cleanup over binary patch hunks; it can corrupt the `GIT binary patch` terminator.
 - Regenerate admin UI patches from `internal/pocketbase` with `git -C internal/pocketbase diff --binary -- <paths>`. Untracked new files need an explicit binary add hunk.
 - Treat `git diff --check` failures inside `.patch` fixtures carefully. It is acceptable to run `git diff --check -- ':!patches/*.patch'` if the patch fixture itself must preserve upstream or binary-patch formatting.
 

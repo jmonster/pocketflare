@@ -35,7 +35,7 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 | Cascade deletes (single-level) | Cascade before main delete; collect all related records across all fields before writes |
 | Raw SQL route (`/api/sql`) | Split multi-statement SQL by `;`, reject mixed read/write |
 
-**patch 014 (`014-d1-parity-fixes.patch`)**
+**patch 017 (`017-d1-parity-fixes.patch`)**
 
 | Feature | Fix |
 |---|---|

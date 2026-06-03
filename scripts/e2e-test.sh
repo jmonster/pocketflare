@@ -362,7 +362,7 @@ assert "create collection with multi-valued file field" '[ -n "$FLIP_COLL_ID" ]'
 # Flip docs field from multi (maxSelect=5) to single (maxSelect=1).
 # This triggers normalizeSingleVsMultipleFieldChanges which drops/recreates
 # views while converting the JSON array column to a scalar column.
-# With the fix in patch 014, view definitions are pre-fetched outside the
+# With the fix in patch 017, view definitions are pre-fetched outside the
 # write transaction so D1 batch mode does not hit query-after-write.
 FLIP_PATCH_BODY="$(jq -n '{name:"e2e_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":1,"maxSize":5242880}}]}')"
 FLIP_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
