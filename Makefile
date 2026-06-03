@@ -1,4 +1,4 @@
-.PHONY: build deploy dev clean update-pb
+.PHONY: build deploy dev clean update-pb proof-critical
 
 build:
 	mkdir -p dist
@@ -16,3 +16,6 @@ clean:
 
 update-pb:
 	./scripts/update-pb.sh
+
+proof-critical:
+	./scripts/proof-critical.sh

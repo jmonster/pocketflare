@@ -1,4 +1,4 @@
-# Durable Object SQLite Mode
+# DO SQLite Architecture
 
 Pocketflare supports two database modes:
 

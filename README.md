@@ -74,6 +74,14 @@ To check whether the pinned [PocketBase] version is current:
 pnpm run check:pb-version
 ```
 
+Run the critical local proof lane before calling a change done:
+
+```sh
+make proof-critical
+```
+
+That runs build, PocketBase version check, fresh patch replay, deploy dry-run, restore, D1 bootstrap, DO SQLite chained views, R2 copy, and cron proofs. Use `pnpm run proof:critical:remote` when you also need deployed-Worker D1 edge fixtures and production realtime proofs.
+
 ## Admin Setup
 
 For a fresh database, deploy and open `/_pf`. Pocketflare redirects to [PocketBase]'s tokenized first-access installer, where you create the first superuser. After setup, use `/_/` for the normal [PocketBase] admin UI.

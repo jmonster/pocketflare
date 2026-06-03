@@ -49,8 +49,11 @@ Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, n
 | `scripts/scaffold-project.sh` | Prompts and creates a new Pocketflare project. |
 | `scripts/migrate-data.sh` | Exports PocketBase SQLite `data.db` to SQL for D1 import. |
 | `scripts/migrate-files.sh` | Uploads `pb_data/storage` files to the R2 `STORAGE` bucket. |
+| `scripts/proof-critical.sh` | Canonical local proof lane for build, patch replay, deploy dry-run, restore, D1, DO SQLite, R2 copy, and cron. |
 | `scripts/backup-verify.mjs` | Non-destructive backup readiness check against a deployed Worker. |
+| `testapp/` | Minimal custom-hook example project used by the scaffold/template path; build outputs under it are ignored. |
 | `docs/production-backups.md` | Production backup strategy, recovery paths, and support matrix. |
+| `docs/do-sqlite-mode.md` | DO SQLite architecture note and transaction-shape reference. |
 | `wrangler.toml` | Worker name, app URL var, D1/R2 bindings, Durable Object bindings, Workers Cron Triggers, and Assets binding. |
 
 ## Cloudflare Resources

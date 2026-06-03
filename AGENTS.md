@@ -8,6 +8,7 @@ node scripts/check-pb-version.mjs
 make build                   # compile Go WASM and copy JS runtime files into dist/
 make deploy                  # build, then pnpm exec wrangler deploy
 make dev                     # pnpm exec wrangler dev
+make proof-critical          # canonical local proof lane
 ./scripts/scaffold-project.sh
 node scripts/doctor.mjs <url> --token <token>           # deployment health check
 node scripts/backup-verify.mjs <url> --token <token>    # backup readiness check
@@ -61,6 +62,8 @@ Adapter: `adapter.New(config)` wires:
 - Workers Assets `ASSETS` for the checked-in admin UI at `admin-ui/_`.
 
 Do not route admin static assets through Go/WASM. `/_pf` owns installer discovery; `/_` and nested static admin requests should stay on Workers Assets.
+
+`testapp/` is a minimal custom-hook example project used by the scaffold/template path. Treat generated binaries under it as ignored build output.
 
 ## Configuration
 
