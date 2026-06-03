@@ -85,7 +85,7 @@ PocketBase backups are not complete Pocketflare production backups. Upstream bac
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 
-`adapter/r2blob` upload writes use a chunked R2 multipart writer: buffer up to one part in Go, upload it, release it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload. Filesystem Copy is separate: it only runs when PocketBase calls `Copy(src, dst)` to duplicate an existing object. With `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID`, Copy can use server-side S3 `CopyObject`; otherwise the intended Worker relay fallback must be runtime-proven before claiming large-copy safety.
+`adapter/r2blob` upload writes use a chunked R2 multipart writer: buffer up to one part in Go, upload it, release it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload. Filesystem Copy is separate: it only runs when PocketBase calls `Copy(src, dst)` to duplicate an existing object. The streaming relay fallback is runtime-proven up to 20 MiB. With `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID`, Copy uses server-side S3 `CopyObject` (SigV4 signing verified correct; E2E proof requires an R2 API token with S3 `PutObject` + `CopyObject` permission on the STORAGE bucket).
 
 Migration docs for local and existing S3-backed PocketBase storage live in `docs/storage-migration.md`. Pocketflare expects R2 object keys under `storage/<collectionId>/<recordId>/<filename>`.
 

@@ -1,8 +1,10 @@
 #!/bin/bash
 # proof-copy.sh — Prove Pocketflare R2 filesystem Copy behavior.
 #
-# Runtime-proves both the streaming fallback path and (when credentials are
-# configured) the S3 CopyObject path against a local wrangler dev Worker.
+# Runtime-proves the streaming fallback path against local wrangler dev.
+# The S3 CopyObject path requires a deployed Worker because the R2 S3 API
+# (*.r2.cloudflarestorage.com) is only reachable from Cloudflare's network.
+# See scripts/proof-d1-edge-fixtures-remote.sh for the remote proof pattern.
 #
 # Verifies:
 #   - Source and destination objects exist after copy

@@ -175,7 +175,7 @@ Terminology:
 - Download means [PocketBase] serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
 - Copy means [PocketBase]'s filesystem `Copy(src, dst)` method duplicated an existing object. Normal uploads, downloads, and migration imports do not use S3 `CopyObject`.
 
-With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. The fallback path is runtime-proven up to 20 MiB via `scripts/proof-copy.sh`; the S3 `CopyObject` path is implemented and uses scoped temporary credentials in the proof lane, but still needs a credentialed proof run.
+With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. The fallback path is runtime-proven up to 20 MiB via `scripts/proof-copy.sh`. The S3 `CopyObject` path is implemented and SigV4 signing is verified correct; end-to-end runtime proof requires an R2 API token with S3 `CopyObject` permission on the STORAGE bucket.
 
 ## Backups and Restore
 
@@ -207,7 +207,7 @@ Navigate to Settings → Backups, upload the `.zip` backup file. The restore pag
 node scripts/restore-backup.mjs https://<worker-domain> backup.zip --token <superuser-token>
 ```
 
-The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. Restore is proven with a small checked-in backup fixture; large backup zips still need scale proof against Worker CPU, upload, and R2 timing limits.
+The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. Restore is runtime-proven with the checked-in minimal fixture (`tests/fixtures/minimal-backup.zip`, 2 tables, 2 records). Larger scale fixtures are generated under `tests/fixtures/` (up to 440 KB data.db / 1000 records) but restore scale proof requires an isolated clean D1 target.
 
 ## Email
 
@@ -340,10 +340,10 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 
 - D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported by D1 and fail before partial persistence. This is a Cloudflare platform constraint, not an open Pocketflare implementation gap. Use `POCKETFLARE_DB_MODE="do_sqlite"` for apps that need upstream SQLite transaction semantics.
 - D1 migrations are statement-by-statement instead of wrapped in one outer transaction. This lets upstream PocketBase migrations run on D1, but a failed migration can leave partial schema/data changes; retry on a fresh target or use DO SQLite when migration rollback semantics matter.
-- D1 collection import with interdependent new view collections is not implemented until its E2E proof is green. Use DO SQLite for that path.
+- D1 collection import with interdependent new view collections fails at the PocketBase/Pocketflare layer (D1 raw SQL supports chained views — verified). Use DO SQLite or a two-step import as workaround.
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
-- R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback is runtime-proven up to 20 MiB; `CopyObject` still needs a credentialed proof run.
+- R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback is runtime-proven up to 20 MiB. SigV4 signing for CopyObject is verified correct; E2E proof requires an R2 API token with S3 `PutObject` + `CopyObject` permission on the STORAGE bucket.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
 - [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this state is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker. The trigger calls `pb.Cron().RunDue()`, so the due-job selection is PocketBase's scheduler even though the wakeup source is Cloudflare.

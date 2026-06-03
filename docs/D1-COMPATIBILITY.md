@@ -39,7 +39,7 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 
 | Feature | Fix |
 |---|---|
-| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch. A single import that creates interdependent new views is not yet E2E-proven. |
+| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch. A single import that creates interdependent new views fails at the PocketBase/Pocketflare layer (D1 raw SQL supports chained views); use DO SQLite or two-step import as workaround. |
 | Field type conversions (single↔multiple) | View definitions pre-fetched outside the write transaction and passed to `normalizeSingleVsMultipleFieldChanges`; no more `sqlite_master` query after ALTER TABLE |
 | Recursive/multi-level cascade deletes | BFS traversal carries the target record for each level, so grandchildren are deleted against their parent id rather than the root id; `skipCascadeDelete` prevents re-entrant cascade |
 | SQL route hardening | Rune-based statement splitter respects string literals, blob literals, line comments, and block comments; mixed read/write batches are rejected before a write can run |
@@ -105,14 +105,33 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 | Batch atomicity | `scripts/e2e-test.sh` §8 | D1 + DO SQLite remote | None known |
 | Sequential health stability | `scripts/e2e-test.sh` §10 | D1 + DO SQLite remote | Cold-start after deploy not covered |
 | Cascade deletes (single-level) | `scripts/e2e-test.sh` §9 (implicit via collection delete) | D1 + DO SQLite remote | None known |
-| Cascade deletes (multi-level) | `scripts/proof-d1-edge-fixtures.sh` §1 | D1 local (wrangler dev) | Needs remote/deployed replay before treating as production-proven |
-| Collection import with interdependent new views | `scripts/proof-d1-edge-fixtures.sh` §3 | D1 local (wrangler dev) | Red: import is canceled by the Workers runtime; treat as unimplemented until green |
-| Raw SQL route | `scripts/proof-d1-edge-fixtures.sh` §2 | D1 local (wrangler dev) | Needs remote/deployed replay before treating as production-proven |
+| Cascade deletes (multi-level) | `scripts/proof-d1-edge-fixtures-remote.sh` §1 | D1 remote (deployed Worker) | None known; 16/16 assertions passed remotely |
+| Collection import with interdependent new views | `scripts/proof-d1-edge-fixtures-remote.sh` §3 | D1 remote (attempted) | Bug: D1 raw SQL supports chained views (verified — CREATE VIEW v2 FROM v1 works and returns correct rows). The import endpoint fails at the PocketBase/Pocketflare layer, not at D1. Use DO SQLite as workaround. |
+| Raw SQL route | `scripts/proof-d1-edge-fixtures-remote.sh` §2 | D1 remote (deployed Worker) | None known; 9/9 assertions passed remotely |
+| Production realtime (DO) | `scripts/proof-realtime-production.sh` | Remote (deployed Worker) | None known; 14/14 assertions passed |
+| Cron in DO SQLite mode | `scripts/proof-cron.sh` (adapted) | Remote (deployed Worker) | None known; RunDue + full scheduled path proven |
 
-### Next Proofs To Add
+### Closed Platform Constraints
 
-- Deployed replay of the D1 edge fixture script.
-- Fix and prove collection import with interdependent new views.
+Immutable Cloudflare limits that cannot be worked around in code:
+
+- **D1 interactive transactions**: D1 `batch()` requires all statements upfront; cannot read intermediate results of queued writes. This is fundamental to D1's architecture. Use DO SQLite for read-your-writes semantics.
+- **D1 batch size**: D1 `batch()` has a 100-bound-parameter limit per batch. Restore database import may hit this for tables with many wide rows.
+- **R2 S3 endpoint accessibility**: The R2 S3 API (`*.r2.cloudflarestorage.com`) is only reachable from within Cloudflare's network. Local `wrangler dev` cannot establish TLS to it. S3 CopyObject proof must run against a deployed Worker.
+
+### Operational Blockers
+
+Items that require credentials, account changes, or resource cleanup:
+
+- **R2 CopyObject E2E proof**: SigV4 signing is verified correct and the code path is structurally complete. Runtime proof requires an R2 API token with S3 `PutObject` + `CopyObject` permission on the STORAGE bucket. The current token lacks S3 API permissions.
+- **D1 account limit**: The Cloudflare account has reached the maximum number of D1 databases. Creating isolated proof targets requires deleting unused databases first.
+
+### Known Product Gaps
+
+Features that are not yet implemented or have known bugs:
+
+- **D1 interdependent new-view import**: D1 raw SQL supports chained views (verified: CREATE VIEW v2 FROM v1 returns correct rows). The `/api/collections/import` endpoint fails when importing two new views where the second references the first. This is a PocketBase/Pocketflare-layer bug. Workaround: use DO SQLite or a two-step import.
+- **Large backup restore scale proof**: Restore is proven with the minimal fixture only. Larger fixtures are generated but not yet proven against an isolated remote target.
 
 ## DO SQLite: Full-Compatibility Path
 

@@ -36,28 +36,28 @@ export class RealtimeDO {
 
   async handleConnection(request) {
     const clientId = crypto.randomUUID();
-
-    const { readable, writable } = new TransformStream();
-    const writer = writable.getWriter();
     const encoder = new TextEncoder();
 
-    this.connections.set(clientId, { writer, type: "sse" });
+    let streamController;
+    const readable = new ReadableStream({
+      start(controller) {
+        streamController = controller;
+        const connectMsg = `id:${clientId}\nevent:PB_CONNECT\ndata:${JSON.stringify({ clientId })}\n\n`;
+        controller.enqueue(encoder.encode(connectMsg));
+      },
+      cancel() {
+        // handled by abort listener below
+      },
+    });
+
+    this.connections.set(clientId, { controller: streamController, type: "sse" });
     console.log({ family: "pocketflare-realtime", phase: "connect", clientId });
 
     request.signal.addEventListener("abort", () => {
       this.connections.delete(clientId);
       this.ctx.storage.delete(`sub:${clientId}`).catch(() => {});
-      writer.close().catch(() => {});
+      try { streamController.close(); } catch {}
     });
-
-    // Send PB_CONNECT exactly as PocketBase does
-    const connectMsg = `id:${clientId}\nevent:PB_CONNECT\ndata:${JSON.stringify({ clientId })}\n\n`;
-    try {
-      await writer.write(encoder.encode(connectMsg));
-    } catch {
-      this.connections.delete(clientId);
-      return new Response(null, { status: 500 });
-    }
 
     return new Response(readable, {
       headers: {
@@ -88,7 +88,7 @@ export class RealtimeDO {
       const encoder = new TextEncoder();
       const msg = `id:${clientId}\nevent:${event}\ndata:${data}\n\n`;
       try {
-        await conn.writer.write(encoder.encode(msg));
+        conn.controller.enqueue(encoder.encode(msg));
         return new Response("ok", { status: 200 });
       } catch {
         this.connections.delete(clientId);

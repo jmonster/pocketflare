@@ -240,8 +240,9 @@ assert "exactly 1 SSE record event after create" '[ "$CREATE_COUNT" = "1" ]'
 CREATE_EVENTS_JSON=$(sse_query "$ARTIFACT_DIR/sse-stream.txt" record-events "$RECORD_ID")
 assert "create event payload is exact" 'printf "%s" "$CREATE_EVENTS_JSON" | jq -e --arg recordId "$RECORD_ID" --arg coll "$COLL_NAME" '"'"'
   length == 1 and
-  .[0].event == $coll and
+  .[0].event == "RECORD_CREATE" and
   .[0].data.action == "create" and
+  .[0].data.collection == $coll and
   .[0].data.record.id == $recordId and
   .[0].data.record.title == "realtime-proof-alpha" and
   .[0].data.record.count == 1
@@ -261,13 +262,15 @@ assert "exactly 2 SSE record events after update" '[ "$UPDATE_COUNT" = "2" ]'
 UPDATE_EVENTS_JSON=$(sse_query "$ARTIFACT_DIR/sse-stream.txt" record-events "$RECORD_ID")
 assert "update event payload is exact" 'printf "%s" "$UPDATE_EVENTS_JSON" | jq -e --arg recordId "$RECORD_ID" --arg coll "$COLL_NAME" '"'"'
   length == 2 and
-  .[0].event == $coll and
+  .[0].event == "RECORD_CREATE" and
   .[0].data.action == "create" and
+  .[0].data.collection == $coll and
   .[0].data.record.id == $recordId and
   .[0].data.record.title == "realtime-proof-alpha" and
   .[0].data.record.count == 1 and
-  .[1].event == $coll and
+  .[1].event == "RECORD_UPDATE" and
   .[1].data.action == "update" and
+  .[1].data.collection == $coll and
   .[1].data.record.id == $recordId and
   .[1].data.record.title == "realtime-proof-beta" and
   .[1].data.record.count == 99
@@ -285,14 +288,14 @@ assert "exactly 3 SSE record events after delete" '[ "$DELETE_COUNT" = "3" ]'
 DELETE_EVENTS_JSON=$(sse_query "$ARTIFACT_DIR/sse-stream.txt" record-events "$RECORD_ID")
 assert "delete event payload is exact" 'printf "%s" "$DELETE_EVENTS_JSON" | jq -e --arg recordId "$RECORD_ID" --arg coll "$COLL_NAME" '"'"'
   length == 3 and
-  [.[] | .event] == [$coll, $coll, $coll] and
+  [.[] | .event] == ["RECORD_CREATE", "RECORD_UPDATE", "RECORD_DELETE"] and
   [.[] | .data.action] == ["create", "update", "delete"] and
   all(.[]; .data.record.id == $recordId) and
+  all(.[]; .data.collection == $coll) and
   .[0].data.record.title == "realtime-proof-alpha" and
   .[0].data.record.count == 1 and
   .[1].data.record.title == "realtime-proof-beta" and
-  .[1].data.record.count == 99 and
-  .[2].data.record.id == $recordId
+  .[1].data.record.count == 99
 '"'"' >/dev/null'
 
 # ── 10. Clean up test collection ──
