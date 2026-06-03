@@ -1,19 +1,17 @@
 #!/bin/bash
-# proof-do-sqlite-view-import.sh — Prove DO SQLite supports chained view collections.
+# proof-do-sqlite-view-chained.sh — Prove DO SQLite supports chained view
+# collections via individual POST /api/collections (not the import endpoint).
 #
 # Starts wrangler dev with APP_DO bound and POCKETFLARE_DB_MODE=do_sqlite,
 # creates a base collection, creates view_a (depends on base) and view_b
-# (depends on view_a) via POST /api/collections, then verifies a base record
-# appears through both views.
+# (depends on view_a) individually via POST /api/collections, then verifies
+# a base record appears through both views.
 #
-# Note: PUT /api/collections/import hangs in DO SQLite mode as of 2026-06-02.
-# This is a Pocketflare bug (the D1-optimized import path in patch 014 causes
-# DO SQLite's transactionSync to block). Individual collection creation via
-# POST is the documented workaround for DO SQLite users who need chained views.
-# See docs/do-sqlite-migration.md for details.
+# Also asserts that PUT /api/collections/import hangs in DO SQLite mode
+# (this is the known limitation; individual POST is the workaround).
 #
 # Usage:
-#   ./scripts/proof-do-sqlite-view-import.sh
+#   ./scripts/proof-do-sqlite-view-chained.sh
 #
 # Requires: wrangler, jq, curl
 set -euo pipefail

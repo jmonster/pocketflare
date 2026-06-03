@@ -207,7 +207,7 @@ Navigate to Settings → Backups, upload the `.zip` backup file. The restore pag
 node scripts/restore-backup.mjs https://<worker-domain> backup.zip --token <superuser-token>
 ```
 
-The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. Restore was previously proven with the checked-in minimal fixture (`tests/fixtures/minimal-backup.zip`, 2 tables, 2 records) but has a known regression (June 2026: `_superusers` INSERT fails during restore after headless bootstrap). Larger scale fixtures are generated under `tests/fixtures/` (up to 440 KB data.db / 1000 records) and are blocked by the same regression.
+The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. Restore is runtime-proven with the minimal fixture (2 tables, 2 records) and the large fixture (1000 records). Requires `POCKETFLARE_ADMIN_EMAIL`/`PASSWORD` env vars for admin access after restore. Larger scale fixtures are generated under `tests/fixtures/`.
 
 ## Email
 

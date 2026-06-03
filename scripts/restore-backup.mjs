@@ -239,9 +239,12 @@ async function importDatabase(api, dataDB, auxDB, sessionId) {
   const sysTables = allTables.filter((t) => t.name.startsWith("_"));
   const userTables = allTables.filter((t) => !t.name.startsWith("_"));
 
-  // Phase A: delete existing rows from system tables.
+  // Phase A: delete existing rows from system tables (except _migrations —
+  // PocketBase tracks applied migrations internally; clearing them causes
+  // Bootstrap to re-run already-applied migrations against live schema).
   log("Clearing bootstrap data...");
   for (const table of sysTables) {
+    if (table.name === "_migrations") continue;
     const dbTarget = tableDBName(dataDB, auxDB, table.name);
     await api.post("/api/pocketflare/restore/database", {
       sessionId, db: dbTarget, statements: [{ sql: "DELETE FROM [" + table.name + "]", params: [] }],
@@ -263,9 +266,12 @@ async function importDatabase(api, dataDB, auxDB, sessionId) {
     });
   }
 
-  // Phase C: import data into all tables.
+  // Phase C: import data into all tables (skip _migrations — PocketBase
+  // owns the migration log; importing stale entries causes Bootstrap to
+  // miss and re-run already-applied migrations).
   log("Importing data...");
   for (const table of allTables) {
+    if (table.name === "_migrations") continue;
     const dbInstance = tableDB(dataDB, auxDB, table.name);
     const cols = getTableColumns(dataDB, auxDB, table.name);
     if (cols.length === 0) continue;

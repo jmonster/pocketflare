@@ -351,7 +351,7 @@ func executeRestoreStatements(e *core.RequestEvent, body *restoreDatabaseRequest
 			return execBatch(txApp, func(a core.App) dbx.Builder { return a.NonconcurrentDB() })
 		})
 		if txErr != nil {
-			return e.BadRequestError("database import failed", txErr)
+return e.BadRequestError("database import failed", txErr)
 		}
 	} else if body.DB == "logs" {
 		txErr := e.App.AuxRunInTransaction(func(txApp core.App) error {
@@ -365,7 +365,7 @@ func executeRestoreStatements(e *core.RequestEvent, body *restoreDatabaseRequest
 			return execBatch(txApp, func(a core.App) dbx.Builder { return a.NonconcurrentDB() })
 		})
 		if txErr != nil {
-			return e.BadRequestError("database import failed", txErr)
+return e.BadRequestError("database import failed", txErr)
 		}
 	}
 
@@ -412,36 +412,14 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 			return e.BadRequestError("cannot finalize in phase: "+marker.Phase, nil)
 		}
 
-		// All reloads must succeed. If any fail, return an error
-		// and keep the marker so the operator can diagnose and retry.
-		if err := e.App.ReloadCachedCollections(); err != nil {
-			return e.InternalServerError("failed to reload collections after restore", err)
-		}
-		if err := e.App.ReloadSettings(); err != nil {
-			return e.InternalServerError("failed to reload settings after restore", err)
-		}
-		// Re-bootstrap the app with the restored data. ResetBootstrapState closes
-		// existing connections and nils DB builders; Bootstrap re-initializes
-		// everything including migrations, collections, and settings.
-		if err := e.App.ResetBootstrapState(); err != nil {
-			return e.InternalServerError("failed to reset bootstrap state after restore", err)
-		}
-		// The app was booted with SkipSystemMigrations because the restore marker
-		// existed. Now that the restore is complete, clear the flag so Bootstrap
-		// applies system migrations to the restored data.
-		e.App.SetSkipSystemMigrations(false)
-		if err := e.App.Bootstrap(); err != nil {
-			e.App.Logger().Error(
-				"restore finalize: Bootstrap failed after ResetBootstrapState; "+
-					"marker preserved in R2 for retry on next cold start",
-				"error", err.Error(),
-			)
-			return e.InternalServerError("failed to re-bootstrap after restore; retry on next cold start", err)
-		}
-
+		// Do not reload caches or settings in the running process.
+		// The import phase already populated all tables; the next
+		// request (which may hit a different isolate) will read
+		// the restored data from the database on cold start.
 		if err := deleteRestoreMarker(); err != nil {
 			return e.InternalServerError("failed to delete restore marker after finalize", err)
 		}
+
 
 		return e.JSON(http.StatusOK, restoreFinalizeResponse{
 			OK:   true,

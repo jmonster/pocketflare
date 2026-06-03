@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // generate-large-backup-zip.mjs — Generate a scale-proof backup fixture
-// with more data: 1000+ records across multiple collections, larger DB.
+// with PocketBase v0.39.0 schema: 1000+ records, multiple collections.
 //
 // Usage:   node tests/fixtures/generate-large-backup-zip.mjs
 // Deps:    cd internal/pocketbase/ui && pnpm install
@@ -38,31 +38,74 @@ async function main() {
   const now = ts();
   const emptyArr = "[]";
   const emptyObj = "{}";
-  const RECORD_COUNT = 1000; // number of records in the scale collection
+  const RECORD_COUNT = 1000;
 
-  // ── _collections ──
-  db.run("CREATE TABLE _collections (id TEXT PRIMARY KEY NOT NULL, system INTEGER DEFAULT 0 NOT NULL, type TEXT DEFAULT 'base' NOT NULL, name TEXT UNIQUE NOT NULL, fields TEXT DEFAULT '[]' NOT NULL, indexes TEXT DEFAULT '[]' NOT NULL, listRule TEXT, viewRule TEXT, createRule TEXT, updateRule TEXT, deleteRule TEXT, options TEXT DEFAULT '{}' NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
+  // Auth options captured from PocketBase v0.39.0 fresh bootstrap.
+  const superusersOpts = JSON.stringify({
+    authRule: "",
+    manageRule: null,
+    authAlert: { enabled: true, emailTemplate: { subject: "Login from a new location", body: "<p>Hello,</p>\n<p>We noticed a login to your {APP_NAME} account from a new location:</p>\n<p><em>{ALERT_INFO}</em></p>\n<p><strong>If this wasn't you, you should immediately change your {APP_NAME} account password to revoke access from all other locations.</strong></p>\n<p>If this was you, you may disregard this email.</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" } },
+    oauth2: { providers: null, mappedFields: { id: "", name: "", username: "", avatarURL: "" }, enabled: false },
+    passwordAuth: { enabled: true, identityFields: ["email"] },
+    mfa: { enabled: false, duration: 600, rule: "" },
+    otp: { enabled: false, duration: 180, length: 8 },
+    authToken: { secret: "test-superuser-auth-secret", duration: 1209600 },
+    passwordResetToken: { secret: "test-superuser-pwreset-secret", duration: 1800 },
+    emailChangeToken: { secret: "test-superuser-emailchange-secret", duration: 1800 },
+    verificationToken: { secret: "test-superuser-verify-secret", duration: 259200 },
+    fileToken: { secret: "test-superuser-file-secret", duration: 120 },
+  });
 
-  const authFields = JSON.stringify([
+  const usersOpts = JSON.stringify({
+    authRule: "",
+    manageRule: null,
+    authAlert: { enabled: true },
+    oauth2: { providers: null, mappedFields: { id: "", name: "name", username: "", avatarURL: "avatar" }, enabled: false },
+    passwordAuth: { enabled: true, identityFields: ["email"] },
+    mfa: { enabled: false, duration: 600, rule: "" },
+    otp: { enabled: false, duration: 180, length: 8 },
+    authToken: { secret: "test-user-auth-secret", duration: 604800 },
+    passwordResetToken: { secret: "test-user-pwreset-secret", duration: 1800 },
+    emailChangeToken: { secret: "test-user-emailchange-secret", duration: 1800 },
+    verificationToken: { secret: "test-user-verify-secret", duration: 259200 },
+    fileToken: { secret: "test-user-file-secret", duration: 120 },
+  });
+
+  const superusersFields = JSON.stringify([
+    { id: "fid", name: "id", type: "text", system: true, required: true, primaryKey: true, pattern: "^[a-z0-9]+$" },
+    { id: "fpwd", name: "password", type: "password", system: true, required: true, minLength: 10 },
+    { id: "ftk", name: "tokenKey", type: "text", system: true, required: true, hidden: true },
     { id: "fe", name: "email", type: "email", system: true, required: true },
+    { id: "fev", name: "emailVisibility", type: "bool", system: true },
+    { id: "fv", name: "verified", type: "bool", system: true },
     { id: "fc", name: "created", type: "autodate", system: true, onCreate: true },
     { id: "fu", name: "updated", type: "autodate", system: true, onCreate: true, onUpdate: true },
   ]);
-  const superusersOpts = JSON.stringify({ allowEmailAuth: true, allowOAuth2Auth: true, allowOTPAuth: false, allowUsernameAuth: false, manageRule: null, minPasswordLength: 10, onlyEmailRegex: "", onlyVerified: false, requireEmail: true });
-  const usersOpts = JSON.stringify({ allowEmailAuth: true, allowOAuth2Auth: true, allowOTPAuth: false, allowUsernameAuth: false, manageRule: null, minPasswordLength: 8, onlyEmailRegex: "", onlyVerified: false, requireEmail: false });
+
   const usersFields = JSON.stringify([
-    { id: "fu_name", name: "name", type: "text", max: 255 },
-    { id: "fu_cr", name: "created", type: "autodate", onCreate: true },
-    { id: "fu_up", name: "updated", type: "autodate", onCreate: true, onUpdate: true },
+    { id: "fid", name: "id", type: "text", system: true, required: true, primaryKey: true, pattern: "^[a-z0-9]+$" },
+    { id: "fpwd", name: "password", type: "password", system: true, required: true, minLength: 8 },
+    { id: "ftk", name: "tokenKey", type: "text", system: true, required: true, hidden: true },
+    { id: "fe", name: "email", type: "email", system: true, required: false },
+    { id: "fev", name: "emailVisibility", type: "bool", system: true },
+    { id: "fv", name: "verified", type: "bool", system: true },
+    { id: "fn", name: "name", type: "text", max: 255 },
+    { id: "fav", name: "avatar", type: "file", maxSize: 5242880, options: { maxSelect: 1, maxSize: 5242880, thumbs: ["50x50"] } },
+    { id: "fc", name: "created", type: "autodate", onCreate: true },
+    { id: "fu", name: "updated", type: "autodate", onCreate: true, onUpdate: true },
   ]);
+
   const scaleFields = JSON.stringify([
     { id: "fs_title", name: "title", type: "text", required: true },
     { id: "fs_count", name: "count", type: "number", required: false },
     { id: "fs_data", name: "data", type: "json", required: false },
   ]);
 
+  // ── _collections ──
+  db.run("CREATE TABLE _collections (id TEXT PRIMARY KEY NOT NULL, system INTEGER DEFAULT 0 NOT NULL, type TEXT DEFAULT 'base' NOT NULL, name TEXT UNIQUE NOT NULL, fields TEXT DEFAULT '[]' NOT NULL, indexes TEXT DEFAULT '[]' NOT NULL, listRule TEXT, viewRule TEXT, createRule TEXT, updateRule TEXT, deleteRule TEXT, options TEXT DEFAULT '{}' NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
+
   const collections = [
-    ["sys001", 1, "auth", "_superusers", authFields, superusersOpts],
+    ["sys001", 1, "auth", "_superusers", superusersFields, superusersOpts],
     ["sys002", 0, "auth", "users", usersFields, usersOpts],
     ["sys003", 1, "base", "_mfas", emptyArr, emptyObj],
     ["sys004", 1, "base", "_otps", emptyArr, emptyObj],
@@ -86,9 +129,9 @@ async function main() {
       logs: { maxDays: 5, maxPerDay: 10000, logIP: false },
       smtp: { enabled: false, host: "", port: 587, username: "", password: "", tls: true, authMethod: "PLAIN", localName: "" },
       s3: { enabled: false, bucket: "", region: "", endpoint: "", accessKey: "", secret: "", forcePathStyle: false },
-      adminAuthToken: { secret: "scale-test-secret-key", duration: 1209600 },
-      recordAuthToken: { secret: "scale-test-record-secret", duration: 1209600 },
-      fileToken: { secret: "scale-test-file-secret", duration: 120 },
+      backups: { cronMaxKeep: 3 },
+      rateLimits: { enabled: false, rules: [] },
+      superuserIPs: [],
       batch: { enabled: true, maxRequests: 10, timeout: 30, maxBodySize: 5242880 },
     }),
     now, now,
@@ -110,17 +153,17 @@ async function main() {
   insMig.free();
 
   // ── _superusers ──
-  db.run("CREATE TABLE _superusers (id TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL, tokenKey TEXT NOT NULL, passwordHash TEXT NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, emailVisibility INTEGER DEFAULT 1 NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
+  db.run("CREATE TABLE _superusers (id TEXT PRIMARY KEY NOT NULL, password TEXT NOT NULL, tokenKey TEXT NOT NULL, email TEXT NOT NULL, emailVisibility INTEGER DEFAULT 0 NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
   const hash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
-  db.run("INSERT INTO _superusers (id,email,tokenKey,passwordHash,verified,emailVisibility,created,updated) VALUES (?,?,?,?,?,?,?,?)",
-    ["su001", "admin@scale.local", "tk-scale-token-key-32chars-xxx", hash, 1, 1, now, now]);
+  db.run("INSERT INTO _superusers (id,password,tokenKey,email,emailVisibility,verified,created,updated) VALUES (?,?,?,?,?,?,?,?)",
+    ["su001", hash, "tk-scale-token-key-32chars-xxx", "admin@scale.local", 1, 1, now, now]);
 
   // ── users ──
-  db.run("CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, email TEXT DEFAULT '' NOT NULL, tokenKey TEXT NOT NULL, passwordHash TEXT NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, emailVisibility INTEGER DEFAULT 1 NOT NULL, name TEXT DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL)");
-  db.run("INSERT INTO users (id,email,tokenKey,passwordHash,verified,emailVisibility,name,created,updated) VALUES (?,?,?,?,?,?,?,?,?)",
-    ["u001", "user@scale.local", "tk-scale-user-token-key-32chx", hash, 1, 1, "Scale User", now, now]);
+  db.run("CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, password TEXT NOT NULL, tokenKey TEXT NOT NULL, email TEXT DEFAULT '' NOT NULL, emailVisibility INTEGER DEFAULT 0 NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, name TEXT DEFAULT '', avatar TEXT DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL)");
+  db.run("INSERT INTO users (id,password,tokenKey,email,emailVisibility,verified,name,avatar,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ["u001", hash, "tk-scale-user-token-key-32chx", "user@scale.local", 1, 1, "Scale User", "", now, now]);
 
-  // ── scale_items — many records for scale proof ──
+  // ── scale_items ──
   db.run("CREATE TABLE scale_items (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, count REAL DEFAULT 0, data TEXT DEFAULT '{}')");
   const insScale = db.prepare("INSERT INTO scale_items (id,title,count,data) VALUES (?,?,?,?)");
   for (let i = 1; i <= RECORD_COUNT; i++) {
@@ -146,14 +189,13 @@ async function main() {
   db.close();
   console.log(`data.db: ${(dataBuffer.length / 1024).toFixed(1)} KB`);
 
-  // ── auxiliary.db (larger) ──
+  // ── auxiliary.db ──
   const aux = new SQL.Database();
   aux.run("CREATE TABLE _logs (id TEXT PRIMARY KEY NOT NULL, level INTEGER DEFAULT 0 NOT NULL, message TEXT DEFAULT '' NOT NULL, data TEXT DEFAULT '{}' NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
-  // Add many log entries for scale
   const insLog = aux.prepare("INSERT INTO _logs (id,level,message,data,created,updated) VALUES (?,?,?,?,?,?)");
   for (let i = 1; i <= 500; i++) {
     const id = `log${String(i).padStart(5, "0")}`;
-    insLog.run([id, i % 4, `Log entry ${i}: operation completed successfully`, JSON.stringify({ op: `op-${i}`, duration: Math.random() * 100 }), now, now]);
+    insLog.run([id, i % 4, `Log entry ${i}: operation completed`, JSON.stringify({ op: `op-${i}`, duration: Math.random() * 100 }), now, now]);
   }
   insLog.free();
   aux.run("CREATE TABLE _migrations (file TEXT PRIMARY KEY NOT NULL, applied INTEGER NOT NULL)");

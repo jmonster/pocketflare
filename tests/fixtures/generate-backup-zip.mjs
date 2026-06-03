@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// generate-backup-zip.mjs — Generate a minimal PocketBase backup zip fixture.
+// generate-backup-zip.mjs — Generate a minimal PocketBase v0.39.0 backup zip fixture.
 //
 // Usage:   node tests/fixtures/generate-backup-zip.mjs
 // Deps:    cd internal/pocketbase/ui && pnpm install
@@ -17,7 +17,6 @@ function ts() {
 }
 
 async function main() {
-  // Import deps
   let JSZip, initSqlJs;
   try {
     JSZip = (await import(resolve(UI_NODE_MODULES, "jszip/dist/jszip.min.js"))).default;
@@ -38,33 +37,80 @@ async function main() {
   const SQL = await initSqlJs({ locateFile: () => sqlWasmPath });
   const db = new SQL.Database();
   const now = ts();
-
-  // ── _collections ──
-  db.run("CREATE TABLE _collections (id TEXT PRIMARY KEY NOT NULL, system INTEGER DEFAULT 0 NOT NULL, type TEXT DEFAULT 'base' NOT NULL, name TEXT UNIQUE NOT NULL, fields TEXT DEFAULT '[]' NOT NULL, indexes TEXT DEFAULT '[]' NOT NULL, listRule TEXT, viewRule TEXT, createRule TEXT, updateRule TEXT, deleteRule TEXT, options TEXT DEFAULT '{}' NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
-
   const emptyArr = "[]";
   const emptyObj = "{}";
 
-  const authFields = JSON.stringify([
+  // Auth options captured from PocketBase v0.39.0 fresh bootstrap.
+  const superusersOpts = JSON.stringify({
+    authRule: "",
+    manageRule: null,
+    authAlert: { enabled: true, emailTemplate: { subject: "Login from a new location", body: "<p>Hello,</p>\n<p>We noticed a login to your {APP_NAME} account from a new location:</p>\n<p><em>{ALERT_INFO}</em></p>\n<p><strong>If this wasn't you, you should immediately change your {APP_NAME} account password to revoke access from all other locations.</strong></p>\n<p>If this was you, you may disregard this email.</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" } },
+    oauth2: { providers: null, mappedFields: { id: "", name: "", username: "", avatarURL: "" }, enabled: false },
+    passwordAuth: { enabled: true, identityFields: ["email"] },
+    mfa: { enabled: false, duration: 600, rule: "" },
+    otp: { enabled: false, duration: 180, length: 8, emailTemplate: { subject: "OTP for {APP_NAME}", body: "<p>Hello,</p>\n<p>Your one-time password is: <strong>{OTP}</strong></p>\n<p><i>If you didn't ask for the one-time password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" } },
+    authToken: { secret: "test-superuser-auth-secret", duration: 1209600 },
+    passwordResetToken: { secret: "test-superuser-pwreset-secret", duration: 1800 },
+    emailChangeToken: { secret: "test-superuser-emailchange-secret", duration: 1800 },
+    verificationToken: { secret: "test-superuser-verify-secret", duration: 259200 },
+    fileToken: { secret: "test-superuser-file-secret", duration: 120 },
+    verificationTemplate: { subject: "Verify your {APP_NAME} email", body: "<p>Hello,</p>\n<p>Thank you for joining us at {APP_NAME}.</p>\n<p>Click on the button below to verify your email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-verification/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Verify</a>\n</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" },
+    resetPasswordTemplate: { subject: "Reset your {APP_NAME} password", body: "<p>Hello,</p>\n<p>Click on the button below to reset your password.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-password-reset/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Reset password</a>\n</p>\n<p><i>If you didn't ask to reset your password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" },
+    confirmEmailChangeTemplate: { subject: "Confirm your {APP_NAME} new email", body: "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" },
+  });
+
+  const usersOpts = JSON.stringify({
+    authRule: "",
+    manageRule: null,
+    authAlert: { enabled: true, emailTemplate: { subject: "Login from a new location", body: "<p>Hello,</p>\n<p>We noticed a login to your {APP_NAME} account from a new location:</p>\n<p><em>{ALERT_INFO}</em></p>\n<p><strong>If this wasn't you, you should immediately change your {APP_NAME} account password to revoke access from all other locations.</strong></p>\n<p>If this was you, you may disregard this email.</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" } },
+    oauth2: { providers: null, mappedFields: { id: "", name: "name", username: "", avatarURL: "avatar" }, enabled: false },
+    passwordAuth: { enabled: true, identityFields: ["email"] },
+    mfa: { enabled: false, duration: 600, rule: "" },
+    otp: { enabled: false, duration: 180, length: 8, emailTemplate: { subject: "OTP for {APP_NAME}", body: "<p>Hello,</p>\n<p>Your one-time password is: <strong>{OTP}</strong></p>\n<p><i>If you didn't ask for the one-time password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" } },
+    authToken: { secret: "test-user-auth-secret", duration: 604800 },
+    passwordResetToken: { secret: "test-user-pwreset-secret", duration: 1800 },
+    emailChangeToken: { secret: "test-user-emailchange-secret", duration: 1800 },
+    verificationToken: { secret: "test-user-verify-secret", duration: 259200 },
+    fileToken: { secret: "test-user-file-secret", duration: 120 },
+    verificationTemplate: { subject: "Verify your {APP_NAME} email", body: "<p>Hello,</p>\n<p>Thank you for joining us at {APP_NAME}.</p>\n<p>Click on the button below to verify your email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-verification/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Verify</a>\n</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" },
+    resetPasswordTemplate: { subject: "Reset your {APP_NAME} password", body: "<p>Hello,</p>\n<p>Click on the button below to reset your password.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-password-reset/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Reset password</a>\n</p>\n<p><i>If you didn't ask to reset your password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" },
+    confirmEmailChangeTemplate: { subject: "Confirm your {APP_NAME} new email", body: "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>" },
+  });
+
+  const superusersFields = JSON.stringify([
+    { id: "fid", name: "id", type: "text", system: true, required: true, primaryKey: true, pattern: "^[a-z0-9]+$" },
+    { id: "fpwd", name: "password", type: "password", system: true, required: true, minLength: 10 },
+    { id: "ftk", name: "tokenKey", type: "text", system: true, required: true, hidden: true },
     { id: "fe", name: "email", type: "email", system: true, required: true },
+    { id: "fev", name: "emailVisibility", type: "bool", system: true },
+    { id: "fv", name: "verified", type: "bool", system: true },
     { id: "fc", name: "created", type: "autodate", system: true, onCreate: true },
     { id: "fu", name: "updated", type: "autodate", system: true, onCreate: true, onUpdate: true },
   ]);
 
-  const superusersOpts = JSON.stringify({ allowEmailAuth: true, allowOAuth2Auth: true, allowOTPAuth: false, allowUsernameAuth: false, manageRule: null, minPasswordLength: 10, onlyEmailRegex: "", onlyVerified: false, requireEmail: true });
-  const usersOpts = JSON.stringify({ allowEmailAuth: true, allowOAuth2Auth: true, allowOTPAuth: false, allowUsernameAuth: false, manageRule: null, minPasswordLength: 8, onlyEmailRegex: "", onlyVerified: false, requireEmail: false });
   const usersFields = JSON.stringify([
-    { id: "fu_name", name: "name", type: "text", max: 255 },
-    { id: "fu_cr", name: "created", type: "autodate", onCreate: true },
-    { id: "fu_up", name: "updated", type: "autodate", onCreate: true, onUpdate: true },
+    { id: "fid", name: "id", type: "text", system: true, required: true, primaryKey: true, pattern: "^[a-z0-9]+$" },
+    { id: "fpwd", name: "password", type: "password", system: true, required: true, minLength: 8 },
+    { id: "ftk", name: "tokenKey", type: "text", system: true, required: true, hidden: true },
+    { id: "fe", name: "email", type: "email", system: true, required: false },
+    { id: "fev", name: "emailVisibility", type: "bool", system: true },
+    { id: "fv", name: "verified", type: "bool", system: true },
+    { id: "fn", name: "name", type: "text", max: 255 },
+    { id: "fav", name: "avatar", type: "file", maxSize: 5242880, options: { maxSelect: 1, maxSize: 5242880, thumbs: ["50x50"] } },
+    { id: "fc", name: "created", type: "autodate", onCreate: true },
+    { id: "fu", name: "updated", type: "autodate", onCreate: true, onUpdate: true },
   ]);
+
   const demoFields = JSON.stringify([
     { id: "fd_title", name: "title", type: "text", required: true },
     { id: "fd_count", name: "count", type: "number", required: false },
   ]);
 
+  // ── _collections ──
+  db.run("CREATE TABLE _collections (id TEXT PRIMARY KEY NOT NULL, system INTEGER DEFAULT 0 NOT NULL, type TEXT DEFAULT 'base' NOT NULL, name TEXT UNIQUE NOT NULL, fields TEXT DEFAULT '[]' NOT NULL, indexes TEXT DEFAULT '[]' NOT NULL, listRule TEXT, viewRule TEXT, createRule TEXT, updateRule TEXT, deleteRule TEXT, options TEXT DEFAULT '{}' NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
+
   const collections = [
-    ["sys001", 1, "auth", "_superusers", authFields, superusersOpts],
+    ["sys001", 1, "auth", "_superusers", superusersFields, superusersOpts],
     ["sys002", 0, "auth", "users", usersFields, usersOpts],
     ["sys003", 1, "base", "_mfas", emptyArr, emptyObj],
     ["sys004", 1, "base", "_otps", emptyArr, emptyObj],
@@ -88,10 +134,10 @@ async function main() {
       logs: { maxDays: 5, maxPerDay: 10000, logIP: false },
       smtp: { enabled: false, host: "", port: 587, username: "", password: "", tls: true, authMethod: "PLAIN", localName: "" },
       s3: { enabled: false, bucket: "", region: "", endpoint: "", accessKey: "", secret: "", forcePathStyle: false },
-      adminAuthToken: { secret: "test-secret-key", duration: 1209600 },
-      recordAuthToken: { secret: "test-record-secret", duration: 1209600 },
-      fileToken: { secret: "test-file-secret", duration: 120 },
+      backups: { cronMaxKeep: 3 },
       batch: { enabled: true, maxRequests: 10, timeout: 30, maxBodySize: 5242880 },
+      rateLimits: { enabled: false, rules: [] },
+      superuserIPs: [],
     }),
     now, now,
   ]);
@@ -112,15 +158,15 @@ async function main() {
   insMig.free();
 
   // ── _superusers ──
-  db.run("CREATE TABLE _superusers (id TEXT PRIMARY KEY NOT NULL, email TEXT NOT NULL, tokenKey TEXT NOT NULL, passwordHash TEXT NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, emailVisibility INTEGER DEFAULT 1 NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
+  db.run("CREATE TABLE _superusers (id TEXT PRIMARY KEY NOT NULL, password TEXT NOT NULL, tokenKey TEXT NOT NULL, email TEXT NOT NULL, emailVisibility INTEGER DEFAULT 0 NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
   const hash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
-  db.run("INSERT INTO _superusers (id,email,tokenKey,passwordHash,verified,emailVisibility,created,updated) VALUES (?,?,?,?,?,?,?,?)",
-    ["su001", "admin@test.local", "tk-test-token-key-32chars-xxxx", hash, 1, 1, now, now]);
+  db.run("INSERT INTO _superusers (id,password,tokenKey,email,emailVisibility,verified,created,updated) VALUES (?,?,?,?,?,?,?,?)",
+    ["su001", hash, "tk-test-token-key-32chars-xxxx", "admin@test.local", 1, 1, now, now]);
 
   // ── users ──
-  db.run("CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, email TEXT DEFAULT '' NOT NULL, tokenKey TEXT NOT NULL, passwordHash TEXT NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, emailVisibility INTEGER DEFAULT 1 NOT NULL, name TEXT DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL)");
-  db.run("INSERT INTO users (id,email,tokenKey,passwordHash,verified,emailVisibility,name,created,updated) VALUES (?,?,?,?,?,?,?,?,?)",
-    ["u001", "user@test.local", "tk-test-user-token-key-32charxxx", hash, 1, 1, "Test User", now, now]);
+  db.run("CREATE TABLE users (id TEXT PRIMARY KEY NOT NULL, password TEXT NOT NULL, tokenKey TEXT NOT NULL, email TEXT DEFAULT '' NOT NULL, emailVisibility INTEGER DEFAULT 0 NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, name TEXT DEFAULT '', avatar TEXT DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL)");
+  db.run("INSERT INTO users (id,password,tokenKey,email,emailVisibility,verified,name,avatar,created,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ["u001", hash, "tk-test-user-token-key-32charxxx", "user@test.local", 1, 1, "Test User", "", now, now]);
 
   // ── demo_items ──
   db.run("CREATE TABLE demo_items (id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, count REAL DEFAULT 0)");
