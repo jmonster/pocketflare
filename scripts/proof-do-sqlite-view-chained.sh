@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN_ID="$(date +%Y%m%dT%H%M%S)"
-ARTIFACT_DIR="$ROOT/.artifacts/proof-do-sqlite-view-import-$RUN_ID"
+ARTIFACT_DIR="$ROOT/.artifacts/proof-do-sqlite-view-chained-$RUN_ID"
 STATE_DIR="$ARTIFACT_DIR/wrangler-state"
 TEMP_WRANGLER="$ROOT/wrangler.proof-do-sqlite-views.toml"
 mkdir -p "$ARTIFACT_DIR" "$STATE_DIR"
@@ -56,7 +56,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== Pocketflare DO SQLite View Import Proof ==="
+echo "=== Pocketflare DO SQLite Chained View Proof ==="
 echo "run: $RUN_ID"
 echo "artifacts: $ARTIFACT_DIR"
 echo ""
@@ -149,11 +149,12 @@ TOKEN="$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/auth-
 
 if [[ -z "$TOKEN" ]]; then
 	# Fallback: try the installer flow via _pf redirect.
-	REDIRECT_URL="$(curl -sS --max-time 30 -o /dev/null -w "%{redirect_url}" "$BASE/_pf" 2>/dev/null || true)"
-	INSTALL_TOKEN="$(echo "$REDIRECT_URL" | grep -o '/pbinstal/[^/&?#]\+' | head -1 | cut -d/ -f3 || true)"
+	REDIRECT_URL="$(curl -sS --max-time 30 -D - -o /dev/null "$BASE/_pf" 2>/dev/null | awk 'tolower($1)=="location:" {print $2; exit}' | tr -d '\r' || true)"
+	INSTALL_TOKEN="$(echo "$REDIRECT_URL" | grep -oE '/pbinstall?/[^/&?#]+' | head -1 | cut -d/ -f3 || true)"
 	if [[ -n "$INSTALL_TOKEN" ]]; then
 		curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/records" \
 			-H "Content-Type: application/json" \
+			-H "Authorization: Bearer $INSTALL_TOKEN" \
 			-d "$(jq -n \
 				--arg email "$ADMIN_EMAIL" \
 				--arg password "$ADMIN_PASSWORD" \
@@ -300,7 +301,7 @@ TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
 
 if [[ "$FAIL" -eq 0 ]]; then
-	green "DO SQLITE VIEW IMPORT PROOF PASSED"
+	green "DO SQLITE CHAINED VIEW PROOF PASSED"
 	exit 0
 fi
 

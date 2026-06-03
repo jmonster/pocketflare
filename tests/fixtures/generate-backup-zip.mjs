@@ -39,6 +39,10 @@ async function main() {
   const now = ts();
   const emptyArr = "[]";
   const emptyObj = "{}";
+  const authIndexes = (name, id) => JSON.stringify([
+    `CREATE UNIQUE INDEX \`idx_tokenKey_${id}\` ON \`${name}\` (\`tokenKey\`)`,
+    `CREATE UNIQUE INDEX \`idx_email_${id}\` ON \`${name}\` (\`email\`) WHERE \`email\` != ''`,
+  ]);
 
   // Auth options captured from PocketBase v0.39.0 fresh bootstrap.
   const superusersOpts = JSON.stringify({
@@ -110,18 +114,18 @@ async function main() {
   db.run("CREATE TABLE _collections (id TEXT PRIMARY KEY NOT NULL, system INTEGER DEFAULT 0 NOT NULL, type TEXT DEFAULT 'base' NOT NULL, name TEXT UNIQUE NOT NULL, fields TEXT DEFAULT '[]' NOT NULL, indexes TEXT DEFAULT '[]' NOT NULL, listRule TEXT, viewRule TEXT, createRule TEXT, updateRule TEXT, deleteRule TEXT, options TEXT DEFAULT '{}' NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
 
   const collections = [
-    ["sys001", 1, "auth", "_superusers", superusersFields, superusersOpts],
-    ["sys002", 0, "auth", "users", usersFields, usersOpts],
-    ["sys003", 1, "base", "_mfas", emptyArr, emptyObj],
-    ["sys004", 1, "base", "_otps", emptyArr, emptyObj],
-    ["sys005", 1, "base", "_authOrigins", emptyArr, emptyObj],
-    ["sys006", 1, "base", "_externalAuths", emptyArr, emptyObj],
-    ["uc001", 0, "base", "demo_items", demoFields, emptyObj],
+    ["sys001", 1, "auth", "_superusers", superusersFields, authIndexes("_superusers", "sys001"), superusersOpts],
+    ["sys002", 0, "auth", "users", usersFields, authIndexes("users", "sys002"), usersOpts],
+    ["sys003", 1, "base", "_mfas", emptyArr, emptyArr, emptyObj],
+    ["sys004", 1, "base", "_otps", emptyArr, emptyArr, emptyObj],
+    ["sys005", 1, "base", "_authOrigins", emptyArr, emptyArr, emptyObj],
+    ["sys006", 1, "base", "_externalAuths", emptyArr, emptyArr, emptyObj],
+    ["uc001", 0, "base", "demo_items", demoFields, emptyArr, emptyObj],
   ];
 
-  const insColl = db.prepare("INSERT INTO _collections (id,system,type,name,fields,options,created,updated) VALUES (?,?,?,?,?,?,?,?)");
+  const insColl = db.prepare("INSERT INTO _collections (id,system,type,name,fields,indexes,options,created,updated) VALUES (?,?,?,?,?,?,?,?,?)");
   for (const row of collections) {
-    insColl.run([row[0], row[1], row[2], row[3], row[4], row[5], now, now]);
+    insColl.run([row[0], row[1], row[2], row[3], row[4], row[5], row[6], now, now]);
   }
   insColl.free();
 
@@ -159,7 +163,7 @@ async function main() {
 
   // ── _superusers ──
   db.run("CREATE TABLE _superusers (id TEXT PRIMARY KEY NOT NULL, password TEXT NOT NULL, tokenKey TEXT NOT NULL, email TEXT NOT NULL, emailVisibility INTEGER DEFAULT 0 NOT NULL, verified INTEGER DEFAULT 0 NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)");
-  const hash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
+  const hash = "$2a$10$UZfMXTYiQYSzYlCi6Qnoy.Yost9D3oVfnrsMw3o5qY4LfDyTl8xn6";
   db.run("INSERT INTO _superusers (id,password,tokenKey,email,emailVisibility,verified,created,updated) VALUES (?,?,?,?,?,?,?,?)",
     ["su001", hash, "tk-test-token-key-32chars-xxxx", "admin@test.local", 1, 1, now, now]);
 

@@ -207,7 +207,7 @@ Navigate to Settings → Backups, upload the `.zip` backup file. The restore pag
 node scripts/restore-backup.mjs https://<worker-domain> backup.zip --token <superuser-token>
 ```
 
-The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. Restore is runtime-proven with the minimal fixture (2 tables, 2 records) and the large fixture (1000 records). Requires `POCKETFLARE_ADMIN_EMAIL`/`PASSWORD` env vars for admin access after restore. Larger scale fixtures are generated under `tests/fixtures/`.
+The CLI script uses the same restore API as the admin UI and prints deterministic progress. It exits non-zero on any failed phase. `scripts/proof-restore-cli.sh` proves the minimal fixture happy path, restore-token resume, and the large fixture (1000 records). Requires `POCKETFLARE_ADMIN_EMAIL`/`PASSWORD` env vars for admin access after restore. Larger scale fixtures are generated under `tests/fixtures/`.
 
 ## Email
 
@@ -340,7 +340,7 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 
 - D1-backed transactions use `D1Database.batch()` for fixed write groups — they are atomic. Interactive SQLite-style transactions that need query-after-write inside the same transaction are not supported by D1 and fail before partial persistence. This is a Cloudflare platform constraint, not an open Pocketflare implementation gap. Use `POCKETFLARE_DB_MODE="do_sqlite"` for apps that need upstream SQLite transaction semantics.
 - D1 migrations are statement-by-statement instead of wrapped in one outer transaction. This lets upstream PocketBase migrations run on D1, but a failed migration can leave partial schema/data changes; retry on a fresh target or use DO SQLite when migration rollback semantics matter.
-- DO SQLite `PUT /api/collections/import` hangs (proven by `scripts/proof-do-sqlite-view-import.sh`). Use individual `POST /api/collections` for each view as workaround. Chained view dependency resolution works correctly for views created individually. D1 mode import supports interdependent views (proven by `scripts/proof-d1-edge-fixtures.sh`).
+- DO SQLite `PUT /api/collections/import` hangs (proven by `scripts/proof-do-sqlite-view-chained.sh`). Use individual `POST /api/collections` for each view as workaround. Chained view dependency resolution works correctly for views created individually. D1 mode import supports interdependent views (proven by `scripts/proof-d1-edge-fixtures.sh`).
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
 - R2 filesystem Copy uses the Worker relay fallback. It is runtime-proven up to 20 MiB and does not hold the whole copied object in Go memory. Server-side S3 `CopyObject` is disabled because deployed Workers rejected R2 S3 endpoint fetches before HTTP.

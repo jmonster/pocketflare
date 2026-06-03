@@ -412,14 +412,18 @@ func restoreFinalize(dbMode string) func(*core.RequestEvent) error {
 			return e.BadRequestError("cannot finalize in phase: "+marker.Phase, nil)
 		}
 
-		// Do not reload caches or settings in the running process.
-		// The import phase already populated all tables; the next
-		// request (which may hit a different isolate) will read
-		// the restored data from the database on cold start.
+		// The running isolate must see the restored schema immediately.
+		// Without these reloads, same-isolate requests keep serving the
+		// pre-restore collection/auth cache until a cold start.
+		if err := e.App.ReloadSettings(); err != nil {
+			return e.InternalServerError("failed to reload settings after restore", err)
+		}
+		if err := e.App.ReloadCachedCollections(); err != nil {
+			return e.InternalServerError("failed to reload collections after restore", err)
+		}
 		if err := deleteRestoreMarker(); err != nil {
 			return e.InternalServerError("failed to delete restore marker after finalize", err)
 		}
-
 
 		return e.JSON(http.StatusOK, restoreFinalizeResponse{
 			OK:   true,

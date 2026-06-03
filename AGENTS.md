@@ -13,6 +13,12 @@ node scripts/doctor.mjs <url> --token <token>           # deployment health chec
 node scripts/backup-verify.mjs <url> --token <token>    # backup readiness check
 ```
 
+## Subagents
+
+- Never spawn forked subagents. Do not set `fork_context=true`.
+- When a subagent is explicitly requested, spawn a fresh mini subagent with an explicit mini model and a narrow prompt.
+- Do not rely on inherited or forked context. Put all necessary repo, task, and constraint context in the subagent prompt.
+
 ## Wrangler `--remote` is ALWAYS required
 
 Wrangler v4 `d1 execute` and `r2 object put` default to **local**. The Worker reads from **remote** D1/R2. Every command that touches production resources must include `--remote`. Local is a dev-only mirror with no connection to the deployed Worker.

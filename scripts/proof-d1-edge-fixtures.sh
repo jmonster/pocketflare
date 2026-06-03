@@ -150,6 +150,7 @@ authenticate() {
 		local install_token="${BASH_REMATCH[1]}"
 		curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/records" \
 			-H "Content-Type: application/json" \
+			-H "Authorization: Bearer $install_token" \
 			-d "$(jq -n \
 				--arg email "$ADMIN_EMAIL" \
 				--arg password "$ADMIN_PASSWORD" \

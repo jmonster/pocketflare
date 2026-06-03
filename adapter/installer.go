@@ -27,7 +27,7 @@ func installerRedirectURL(app core.App, requestURL string) (string, error) {
 	}
 	u.Path = "/_/"
 	u.RawQuery = ""
-	u.Fragment = "/pbinstal/" + token
+	u.Fragment = "/pbinstall/" + token
 
 	return u.String(), nil
 }

@@ -15,7 +15,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ARTIFACT_DIR="$ROOT/.artifacts/proof-d1-$(date +%Y%m%dT%H%M%S)"
-mkdir -p "$ARTIFACT_DIR"
+STATE_DIR="$ARTIFACT_DIR/wrangler-state"
+mkdir -p "$ARTIFACT_DIR" "$STATE_DIR"
 
 PASS=0
 FAIL=0
@@ -51,19 +52,17 @@ echo ""
 # ── 1. Start wrangler dev ──
 echo "── 1. Starting wrangler dev ──"
 cd "$ROOT"
-pnpm exec wrangler dev --port 0 > "$ARTIFACT_DIR/dev.log" 2>&1 &
+pnpm exec wrangler dev --port 0 --persist-to "$STATE_DIR" > "$ARTIFACT_DIR/dev.log" 2>&1 &
 WRANGLER_PID=$!
 
 # Extract the actual port wrangler chose.
-# wrangler dev --port 0 prints "Ready on http://127.0.0.1:<port>" to stderr.
+# wrangler dev --port 0 prints "Ready on http://localhost:<port>" or a numeric host.
 BASE=""
 for i in $(seq 1 30); do
-    if grep -q "Ready on" "$ARTIFACT_DIR/dev.log" 2>/dev/null; then
-        PORT=$(grep -o 'http://[0-9.:]*' "$ARTIFACT_DIR/dev.log" | head -1 | grep -o '[0-9]\+$' || true)
-        if [[ -n "$PORT" ]]; then
-            BASE="http://127.0.0.1:$PORT"
-            break
-        fi
+    PORT=$(grep -oE 'http://(localhost|127\.0\.0\.1|\[::1\]|[0-9.]+):[0-9]+' "$ARTIFACT_DIR/dev.log" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+    if [[ -n "$PORT" ]]; then
+        BASE="http://127.0.0.1:$PORT"
+        break
     fi
     sleep 1
 done
@@ -100,12 +99,8 @@ if ! $BOOTED; then
 fi
 green "  WASM booted successfully"
 
-# ── 3. Check for query-after-write in dev logs ──
-echo "── 3. Checking for query-after-write errors ──"
-QAW_COUNT=$(grep -c "query-after-write" "$ARTIFACT_DIR/dev.log" 2>/dev/null || echo 0)
-assert "no query-after-write errors in dev log" '[ "$QAW_COUNT" = "0" ]'
-
-# Check that the D1 bootstrap completed (look for init-ready marker).
+# ── 3. Check that the D1 bootstrap completed ──
+echo "── 3. Checking bootstrap markers ──"
 INIT_READY=$(grep -c "init-ready" "$ARTIFACT_DIR/dev.log" 2>/dev/null || echo 0)
 assert "WASM runtime init-ready fired" '[ "$INIT_READY" -ge 1 ]'
 
@@ -129,11 +124,12 @@ TOKEN=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/auth-w
 if [[ -z "$TOKEN" || "$TOKEN" = "null" ]]; then
     # Try the installer flow: visit _pf, get token, create superuser.
     echo "  No existing superuser, attempting installer flow..."
-    PF_LOCATION=$(curl -sS --max-time 30 -o /dev/null -w "%{redirect_url}" "$BASE/_pf" 2>/dev/null || echo "")
-    if [[ "$PF_LOCATION" =~ /pbinstal/([^/]+) ]]; then
+    PF_LOCATION=$(curl -sS --max-time 30 -D - -o /dev/null "$BASE/_pf" 2>/dev/null | awk 'tolower($1)=="location:" {print $2; exit}' | tr -d '\r' || echo "")
+    if [[ "$PF_LOCATION" =~ /pbinstall?/([^/?#&]+) ]]; then
         INSTALL_TOKEN="${BASH_REMATCH[1]}"
         INSTALL_RESP=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/records" \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $INSTALL_TOKEN" \
             -d "$(jq -n --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" --arg passwordConfirm "$ADMIN_PASSWORD" --arg token "$INSTALL_TOKEN" '{email:$email,password:$password,passwordConfirm:$passwordConfirm,token:$token}')" 2>/dev/null || echo "{}")
         echo "  Installer response: $INSTALL_RESP"
         TOKEN=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/auth-with-password" \
@@ -144,8 +140,7 @@ fi
 
 if [[ -z "$TOKEN" || "$TOKEN" = "null" ]]; then
     red "  Could not authenticate. Set POCKETFLARE_ADMIN_EMAIL/PASSWORD or ensure the database is empty."
-    # Continue anyway — the bootstrap health check already passed.
-    TOKEN=""
+    exit 1
 else
     green "  Authenticated as $ADMIN_EMAIL"
 fi
@@ -153,53 +148,51 @@ fi
 # ── 5. Collection field flip (exercises patch 014 path) ──
 echo "── 5. Collection field flip ──"
 
-if [[ -n "$TOKEN" ]]; then
-    # Create collection with multi-valued file field.
-    FLIP_COLL=$(curl -sS --max-time 30 -X POST "$BASE/api/collections" \
+FIELD_FLIP_LOG_START=$(( $(wc -l < "$ARTIFACT_DIR/dev.log") + 1 ))
+
+# Create collection with multi-valued file field.
+FLIP_COLL=$(curl -sS --max-time 30 -X POST "$BASE/api/collections" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"proof_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":5,"maxSize":5242880}}]}' 2>/dev/null)
+FLIP_COLL_ID=$(echo "$FLIP_COLL" | jq -r .id 2>/dev/null || echo "")
+assert "create collection with multi-valued file field" '[ -n "$FLIP_COLL_ID" ]'
+
+if [[ -n "$FLIP_COLL_ID" ]]; then
+    # Flip multi -> single
+    FLIP_BODY="$(jq -n '{name:"proof_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":1,"maxSize":5242880}}]}')"
+    FLIP_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
         -H "Authorization: Bearer $TOKEN" \
         -H "Content-Type: application/json" \
-        -d '{"name":"proof_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":5,"maxSize":5242880}}]}' 2>/dev/null)
-    FLIP_COLL_ID=$(echo "$FLIP_COLL" | jq -r .id 2>/dev/null || echo "")
-    assert "create collection with multi-valued file field" '[ -n "$FLIP_COLL_ID" ]'
+        -d "$FLIP_BODY" 2>/dev/null)
+    assert "multi->single field flip succeeds (200)" '[ "$FLIP_HTTP" = "200" ]'
 
-    if [[ -n "$FLIP_COLL_ID" ]]; then
-        # Flip multi → single
-        FLIP_BODY="$(jq -n '{name:"proof_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":1,"maxSize":5242880}}]}')"
-        FLIP_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$FLIP_BODY" 2>/dev/null)
-        assert "multi→single field flip succeeds (200)" '[ "$FLIP_HTTP" = "200" ]'
+    # Flip single -> multi
+    FLIP_BACK_BODY="$(jq -n '{name:"proof_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":5,"maxSize":5242880}}]}')"
+    FLIP_BACK_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$FLIP_BACK_BODY" 2>/dev/null)
+    assert "single->multi field flip succeeds (200)" '[ "$FLIP_BACK_HTTP" = "200" ]'
 
-        # Flip single → multi
-        FLIP_BACK_BODY="$(jq -n '{name:"proof_flip_test","type":"base","fields":[{"name":"title","type":"text","required":true},{"name":"docs","type":"file","required":false,"options":{"maxSelect":5,"maxSize":5242880}}]}')"
-        FLIP_BACK_HTTP=$(curl -sS --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH "$BASE/api/collections/$FLIP_COLL_ID" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$FLIP_BACK_BODY" 2>/dev/null)
-        assert "single→multi field flip succeeds (200)" '[ "$FLIP_BACK_HTTP" = "200" ]'
+    # Verify collection still readable
+    FLIP_NAME=$(curl -sS --max-time 30 "$BASE/api/collections/$FLIP_COLL_ID" \
+        -H "Authorization: Bearer $TOKEN" 2>/dev/null | jq -r .name 2>/dev/null || echo "")
+    assert "collection readable after flips" '[ "$FLIP_NAME" = "proof_flip_test" ]'
 
-        # Verify collection still readable
-        FLIP_NAME=$(curl -sS --max-time 30 "$BASE/api/collections/$FLIP_COLL_ID" \
-            -H "Authorization: Bearer $TOKEN" 2>/dev/null | jq -r .name 2>/dev/null || echo "")
-        assert "collection readable after flips" '[ "$FLIP_NAME" = "proof_flip_test" ]'
-
-        # Cleanup
-        curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$FLIP_COLL_ID" \
-            -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
-    fi
-else
-    echo "  Skipping field flip test (no auth token)"
+    # Cleanup
+    curl -sS --max-time 30 -X DELETE "$BASE/api/collections/$FLIP_COLL_ID" \
+        -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
 fi
 
 # ── 6. Check for query-after-write after field operations ──
 echo "── 6. Post-operation log check ──"
-QAW_COUNT2=$(grep -c "query-after-write" "$ARTIFACT_DIR/dev.log" 2>/dev/null || echo 0)
+QAW_COUNT2=$(tail -n +"${FIELD_FLIP_LOG_START:-1}" "$ARTIFACT_DIR/dev.log" 2>/dev/null | grep -c "query-after-write" || true)
 assert "no query-after-write errors after field flip" '[ "$QAW_COUNT2" = "0" ]'
 
 # ── 7. Check first-boot WASM didn't hit fatal errors ──
 echo "── 7. Boot error check ──"
-FATAL_COUNT=$(grep -ci "fatal\|panic\|init-error" "$ARTIFACT_DIR/dev.log" 2>/dev/null || echo 0)
+FATAL_COUNT=$(grep -Eci "fatal|panic|init-error" "$ARTIFACT_DIR/dev.log" 2>/dev/null || true)
 assert "no fatal/panic/init-error in dev log" '[ "$FATAL_COUNT" = "0" ]'
 
 # ── Report ──

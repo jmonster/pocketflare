@@ -186,8 +186,8 @@ TOKEN=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/auth-w
 
 if [[ -z "$TOKEN" || "$TOKEN" = "null" ]]; then
     echo "  Creating superuser via installer..."
-    PF_LOCATION=$(curl -sS --max-time 30 -o /dev/null -w "%{redirect_url}" "$BASE/_pf" 2>/dev/null || echo "")
-    if [[ "$PF_LOCATION" =~ /pbinstal/([^/]+) ]]; then
+    PF_LOCATION=$(curl -sS --max-time 30 -D - -o /dev/null "$BASE/_pf" 2>/dev/null | awk 'tolower($1)=="location:" {print $2; exit}' | tr -d '\r' || echo "")
+    if [[ "$PF_LOCATION" =~ /pbinstall?/([^/?#&]+) ]]; then
         INSTALL_TOKEN="${BASH_REMATCH[1]}"
         curl -sS --max-time 30 -X POST "$BASE/api/collections/_superusers/records" \
             -H "Content-Type: application/json" \

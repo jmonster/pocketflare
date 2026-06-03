@@ -99,8 +99,8 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 |---|---|---|---|
 | D1 bootstrap (no QAW) | `scripts/proof-d1-bootstrap.sh` | D1 local (wrangler dev) | Cold-start timing varies per deployment |
 | Field flip multi↔single | `scripts/proof-d1-bootstrap.sh` §5, `scripts/e2e-test.sh` §9 | D1 local + remote | View-heavy schemas not covered |
-| Restore happy path | `scripts/proof-restore-cli.sh` §1-5 | D1 + DO SQLite local | **Regressed June 2026:** `_superusers` INSERT fails during restore after headless bootstrap. Previously proven with minimal fixture. |
-| Restore resume | `scripts/proof-restore-cli.sh` §6 | D1 + DO SQLite local | Same regression as happy path; blocked by `_superusers` INSERT failure. |
+| Restore happy path | `scripts/proof-restore-cli.sh` §1-5, §7 | D1 local (wrangler dev) | Minimal fixture and large 1000-record fixture proven. |
+| Restore resume | `scripts/proof-restore-cli.sh` §6 | D1 local (wrangler dev) | Restore-token resume proven with minimal fixture. |
 | Full CRUD + auth + files | `scripts/e2e-test.sh` §1-7 | D1 + DO SQLite remote | None known |
 | Batch atomicity | `scripts/e2e-test.sh` §8 | D1 + DO SQLite remote | None known |
 | Sequential health stability | `scripts/e2e-test.sh` §10 | D1 + DO SQLite remote | Cold-start after deploy not covered |
