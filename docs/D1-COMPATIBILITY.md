@@ -39,7 +39,7 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 
 | Feature | Fix |
 |---|---|
-| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch. A single import that creates interdependent new views fails at the PocketBase/Pocketflare layer (D1 raw SQL supports chained views); use DO SQLite or two-step import as workaround. |
+| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch. Interdependent view import works in D1 mode (proven by `scripts/proof-d1-edge-fixtures.sh` §3). In DO SQLite mode, `PUT /api/collections/import` hangs (proven by `scripts/proof-do-sqlite-view-import.sh`); use individual `POST /api/collections` for each view as workaround. |
 | Field type conversions (single↔multiple) | View definitions pre-fetched outside the write transaction and passed to `normalizeSingleVsMultipleFieldChanges`; no more `sqlite_master` query after ALTER TABLE |
 | Recursive/multi-level cascade deletes | BFS traversal carries the target record for each level, so grandchildren are deleted against their parent id rather than the root id; `skipCascadeDelete` prevents re-entrant cascade |
 | SQL route hardening | Rune-based statement splitter respects string literals, blob literals, line comments, and block comments; mixed read/write batches are rejected before a write can run |
@@ -99,14 +99,15 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 |---|---|---|---|
 | D1 bootstrap (no QAW) | `scripts/proof-d1-bootstrap.sh` | D1 local (wrangler dev) | Cold-start timing varies per deployment |
 | Field flip multi↔single | `scripts/proof-d1-bootstrap.sh` §5, `scripts/e2e-test.sh` §9 | D1 local + remote | View-heavy schemas not covered |
-| Restore happy path | `scripts/proof-restore-cli.sh` §1-5 | D1 + DO SQLite local | Large backup zip timing |
-| Restore resume | `scripts/proof-restore-cli.sh` §6 | D1 + DO SQLite local | Network interruption mid-DB-import |
+| Restore happy path | `scripts/proof-restore-cli.sh` §1-5 | D1 + DO SQLite local | **Regressed June 2026:** `_superusers` INSERT fails during restore after headless bootstrap. Previously proven with minimal fixture. |
+| Restore resume | `scripts/proof-restore-cli.sh` §6 | D1 + DO SQLite local | Same regression as happy path; blocked by `_superusers` INSERT failure. |
 | Full CRUD + auth + files | `scripts/e2e-test.sh` §1-7 | D1 + DO SQLite remote | None known |
 | Batch atomicity | `scripts/e2e-test.sh` §8 | D1 + DO SQLite remote | None known |
 | Sequential health stability | `scripts/e2e-test.sh` §10 | D1 + DO SQLite remote | Cold-start after deploy not covered |
 | Cascade deletes (single-level) | `scripts/e2e-test.sh` §9 (implicit via collection delete) | D1 + DO SQLite remote | None known |
 | Cascade deletes (multi-level) | `scripts/proof-d1-edge-fixtures-remote.sh` §1 | D1 remote (deployed Worker) | None known; 16/16 assertions passed remotely |
-| Collection import with interdependent new views | `scripts/proof-d1-edge-fixtures-remote.sh` §3 | D1 remote (attempted) | Bug: D1 raw SQL supports chained views (verified — CREATE VIEW v2 FROM v1 works and returns correct rows). The import endpoint fails at the PocketBase/Pocketflare layer, not at D1. Use DO SQLite as workaround. |
+| Collection import with interdependent new views (D1) | `scripts/proof-d1-edge-fixtures.sh` §3 | D1 local (wrangler dev) | Proven: import returns 204, view2 resolves chained dependency correctly. |
+| Collection import with interdependent new views (DO SQLite) | `scripts/proof-do-sqlite-view-import.sh` | DO SQLite local (wrangler dev) | Import endpoint hangs in DO SQLite mode. Workaround: create views individually via `POST /api/collections`. Chained dependency resolution works. |
 | Raw SQL route | `scripts/proof-d1-edge-fixtures-remote.sh` §2 | D1 remote (deployed Worker) | None known; 9/9 assertions passed remotely |
 | Production realtime (DO) | `scripts/proof-realtime-production.sh` | Remote (deployed Worker) | None known; 14/14 assertions passed |
 | Cron in DO SQLite mode | `scripts/proof-cron.sh` (adapted) | Remote (deployed Worker) | None known; RunDue + full scheduled path proven |
@@ -130,8 +131,8 @@ Items that require credentials, account changes, or resource cleanup:
 
 Features that are not yet implemented or have known bugs:
 
-- **D1 interdependent new-view import**: D1 raw SQL supports chained views (verified: CREATE VIEW v2 FROM v1 returns correct rows). The `/api/collections/import` endpoint fails when importing two new views where the second references the first. This is a PocketBase/Pocketflare-layer bug. Workaround: use DO SQLite or a two-step import.
-- **Large backup restore scale proof**: Restore is proven with the minimal fixture only. Larger fixtures are generated but not yet proven against an isolated remote target.
+- **D1 interdependent new-view import**: Proven working via `scripts/proof-d1-edge-fixtures.sh` §3. Chained view dependencies resolve correctly through the import endpoint.
+- **Restore regression (June 2026)**: Restore is currently broken for all fixtures — `_superusers` INSERT fails in the D1 transaction after headless bootstrap. Previously proven with the minimal fixture. Larger fixtures are generated but blocked by the same regression. See `scripts/proof-do-sqlite-view-import.sh` §12 for the related import API hang in DO SQLite mode.
 
 ## DO SQLite: Full-Compatibility Path
 
