@@ -67,9 +67,9 @@ Runtime env vars:
 - `POCKETFLARE_MAIL_DOMAIN`: optional Mailgun sending domain.
 - `POCKETFLARE_MAIL_WEBHOOK_URL`: optional HTTPS mail webhook (legacy).
 - `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token for the mail webhook.
-- `R2_ACCESS_KEY_ID`: optional R2 API token access key for server-side CopyObject.
-- `R2_SECRET_ACCESS_KEY`: optional R2 API token secret for server-side CopyObject.
-- `R2_ACCOUNT_ID`: optional Cloudflare account ID for server-side CopyObject.
+- `R2_ACCESS_KEY_ID`: reserved; server-side CopyObject is disabled after deployed Worker E2E rejected R2 S3 endpoint fetches before HTTP.
+- `R2_SECRET_ACCESS_KEY`: reserved; server-side CopyObject is disabled.
+- `R2_ACCOUNT_ID`: reserved; server-side CopyObject is disabled.
 
 `adapter.New` applies `POCKETFLARE_APP_URL` and trusted proxy header defaults before `Bootstrap()`. PocketBase persists those only when no `_params/settings` row exists, so migrated and already-deployed projects keep their stored settings. New databases default `TrustedProxy.Headers` to `["CF-Connecting-IP"]`.
 
@@ -85,7 +85,7 @@ PocketBase backups are not complete Pocketflare production backups. Upstream bac
 
 Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
 
-`adapter/r2blob` upload writes use a chunked R2 multipart writer: buffer up to one part in Go, upload it, release it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload. Filesystem Copy is separate: it only runs when PocketBase calls `Copy(src, dst)` to duplicate an existing object. The streaming relay fallback is runtime-proven up to 20 MiB. With `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_ACCOUNT_ID`, Copy uses server-side S3 `CopyObject` (SigV4 signing verified correct; E2E proof requires an R2 API token with S3 `PutObject` + `CopyObject` permission on the STORAGE bucket).
+`adapter/r2blob` upload writes use a chunked R2 multipart writer: buffer up to one part in Go, upload it, release it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload. Filesystem Copy is separate: it only runs when PocketBase calls `Copy(src, dst)` to duplicate an existing object. Copy uses the streaming relay fallback and is runtime-proven up to 20 MiB. Server-side S3 `CopyObject` is disabled because deployed Worker E2E rejected both R2 S3 endpoint URL forms before HTTP.
 
 Migration docs for local and existing S3-backed PocketBase storage live in `docs/storage-migration.md`. Pocketflare expects R2 object keys under `storage/<collectionId>/<recordId>/<filename>`.
 

@@ -149,18 +149,9 @@ EOF
 POCKETFLARE_STORAGE_BUCKET_NAME = "$(toml_escape "$storage_bucket")"
 POCKETFLARE_BACKUPS_BUCKET_NAME = "$(toml_escape "$backups_bucket")"
 
-# Optional: enable server-side R2 CopyObject for large file copies.
-# When unset, file copies stream through the Worker with bounded memory.
-# When all three values (below) are set, copies happen inside R2 with zero
-# Worker data transfer.
-#
-# Create an R2 API token (Object Read & Write on STORAGE and BACKUPS) at:
-#   https://dash.cloudflare.com/<your-account>/r2/api-tokens
-# Then set:
-#   pnpm exec wrangler secret put R2_ACCESS_KEY_ID
-#   pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY
-#
-# R2_ACCOUNT_ID = ""
+# File copies stream through the Worker with bounded memory.
+# Server-side R2 S3 CopyObject is disabled after deployed Worker E2E rejected
+# r2.cloudflarestorage.com fetch URLs before HTTP.
 EOF
 
     if [[ "$db_mode" == "d1" ]]; then

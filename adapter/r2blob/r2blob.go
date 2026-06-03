@@ -16,7 +16,6 @@ import (
 
 	"github.com/pocketbase/pocketbase/tools/filesystem/blob"
 	"github.com/pocketflare/pocketflare/adapter/internal/jsutil"
-	"github.com/pocketflare/pocketflare/adapter/r2blob/s3sig"
 	"github.com/syumai/workers/cloudflare"
 )
 
@@ -25,13 +24,12 @@ const r2PartSize = 10 * 1024 * 1024 // 10 MiB
 // Driver implements blob.Driver backed by Cloudflare R2.
 type Driver struct {
 	bucket     js.Value
-	bucketName string // actual R2 bucket name for S3 API calls
+	bucketName string
 }
 
 // New creates a new R2-backed blob Driver.
 // bindingName is the Workers binding name (e.g. "STORAGE").
-// bucketName is the actual R2 bucket name (e.g. "pocketflare-storage"), used
-// for S3 CopyObject API calls. It must match the bucket_name in wrangler.toml.
+// bucketName is the actual R2 bucket name (e.g. "pocketflare-storage").
 func New(bindingName, bucketName string) *Driver {
 	return &Driver{
 		bucket:     cloudflare.GetBinding(bindingName),
@@ -134,22 +132,12 @@ func (d *Driver) NewTypedWriter(ctx context.Context, key, contentType string, op
 	}, nil
 }
 
-// Copy copies srcKey to dstKey. Uses server-side S3 CopyObject when R2 API
-// credentials are configured; otherwise streams via FixedLengthStream (no
-// Go-side buffering).
+// Copy copies srcKey to dstKey through FixedLengthStream with no Go-side
+// buffering of the copied object.
 func (d *Driver) Copy(ctx context.Context, dstKey, srcKey string) error {
-	accessKey := cloudflare.Getenv("R2_ACCESS_KEY_ID")
-	secretKey := cloudflare.Getenv("R2_SECRET_ACCESS_KEY")
-	accountID := cloudflare.Getenv("R2_ACCOUNT_ID")
-	sessionToken := cloudflare.Getenv("R2_SESSION_TOKEN")
-
-	if accessKey != "" && secretKey != "" && accountID != "" {
-		return d.s3CopyObject(ctx, dstKey, srcKey, accessKey, secretKey, accountID, sessionToken)
-	}
-
 	copyFallbackOnce.Do(func() {
-		log.Print("r2blob: R2 API credentials not set; copies will stream through Worker " +
-			"(set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID for server-side CopyObject)")
+		log.Print("r2blob: copies stream through Worker with FixedLengthStream; " +
+			"server-side R2 S3 CopyObject is disabled because deployed Workers reject r2.cloudflarestorage.com fetch URLs")
 	})
 	return d.streamingCopy(ctx, dstKey, srcKey)
 }
@@ -306,64 +294,6 @@ func (w *r2Writer) abortUpload() {
 	}
 	p := w.upload.Call("abort")
 	jsutil.AwaitPromise(context.Background(), p) // best effort
-}
-
-// ---------------------------------------------------------------------------
-// Copy helpers
-// ---------------------------------------------------------------------------
-
-// s3CopyObject performs a server-side copy via the R2 S3 HTTP API.
-// Zero data flows through the Worker.
-func (d *Driver) s3CopyObject(ctx context.Context, dstKey, srcKey string, accessKey, secretKey, accountID, sessionToken string) error {
-	host := accountID + ".r2.cloudflarestorage.com"
-	path := s3sig.CanonicalURI(d.bucketName + "/" + dstKey)
-	srcPath := s3sig.CanonicalURI(d.bucketName + "/" + srcKey)
-
-	now := time.Now()
-	payloadSHA := s3sig.EmptyPayloadHash()
-	extraHeaders := map[string]string{"x-amz-copy-source": srcPath}
-	if sessionToken != "" {
-		extraHeaders["x-amz-security-token"] = sessionToken
-	}
-
-	auth := s3sig.Sign(
-		accessKey, secretKey, "auto", "s3", now,
-		"PUT", host, path,
-		extraHeaders,
-		payloadSHA,
-	)
-
-	url := "https://" + host + path
-
-	fetchOpts := newJSObject()
-	fetchOpts.Set("method", "PUT")
-
-	headers := newJSObject()
-	headers.Set("x-amz-date", now.Format("20060102T150405Z"))
-	headers.Set("x-amz-content-sha256", payloadSHA)
-	headers.Set("x-amz-copy-source", srcPath)
-	if sessionToken != "" {
-		headers.Set("x-amz-security-token", sessionToken)
-	}
-	headers.Set("Authorization", auth)
-	fetchOpts.Set("headers", headers)
-
-	promise := js.Global().Call("fetch", url, fetchOpts)
-	resp, err := jsutil.AwaitPromise(ctx, promise)
-	if err != nil {
-		return fmt.Errorf("s3 copy fetch: %w", err)
-	}
-
-	status := resp.Get("status").Int()
-	if status == 200 {
-		return nil
-	}
-	if status == 404 {
-		return blob.ErrNotFound
-	}
-
-	body, _ := jsutil.AwaitPromise(ctx, resp.Call("text"))
-	return fmt.Errorf("s3 copy: HTTP %d: %s", status, body.String())
 }
 
 // streamingCopy copies via FixedLengthStream Get+Put. No Go buffering; data

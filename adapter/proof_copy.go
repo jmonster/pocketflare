@@ -39,8 +39,21 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 	if cloudflare.Getenv("POCKETFLARE_ENABLE_PROOF_ROUTES") != "1" {
 		return
 	}
-	rg.POST("/proof/copy", func(e *core.RequestEvent) error {
+	rg.POST("/proof/copy", func(e *core.RequestEvent) (handlerErr error) {
+		copyPath := "unknown"
+		phase := "start"
+		defer func() {
+			if r := recover(); r != nil {
+				handlerErr = e.JSON(http.StatusOK, proofCopyResponse{
+					OK:       false,
+					CopyPath: copyPath,
+					Error:    fmt.Sprintf("panic at %s: %v", phase, r),
+				})
+			}
+		}()
+
 		body := new(proofCopyRequest)
+		phase = "bind-body"
 		if err := e.BindBody(body); err != nil {
 			return e.BadRequestError("invalid request body", err)
 		}
@@ -55,16 +68,28 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 		}
 
 		// Determine which copy path will be used.
-		copyPath := "streaming-fallback"
-		if cloudflare.Getenv("R2_ACCESS_KEY_ID") != "" &&
-			cloudflare.Getenv("R2_SECRET_ACCESS_KEY") != "" &&
-			cloudflare.Getenv("R2_ACCOUNT_ID") != "" {
-			copyPath = "s3-copy-object"
+		phase = "select-copy-path"
+		copyPath = "streaming-fallback"
+		fail := func(msg string, err error, srcKey string, dstKey string) error {
+			detail := msg
+			if err != nil {
+				detail = fmt.Sprintf("%s: %v", msg, err)
+			}
+			return e.JSON(http.StatusOK, proofCopyResponse{
+				OK:          false,
+				SrcKey:      srcKey,
+				DstKey:      dstKey,
+				Size:        body.Size,
+				ContentType: body.ContentType,
+				CopyPath:    copyPath,
+				Error:       detail,
+			})
 		}
 
+		phase = "new-filesystem"
 		fsys, err := app.NewFilesystem()
 		if err != nil {
-			return e.InternalServerError("failed to create filesystem", err)
+			return fail("failed to create filesystem", err, "", "")
 		}
 		defer fsys.Close()
 
@@ -85,20 +110,24 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 		}()
 
 		// Upload source object.
+		phase = "upload-source"
 		if err := fsys.Upload(content, srcKey); err != nil {
-			return e.InternalServerError("upload source failed", err)
+			return fail("upload source failed", err, srcKey, dstKey)
 		}
 
 		// Copy src -> dst through the filesystem (triggers R2 Copy path).
+		phase = "copy"
 		if err := fsys.Copy(srcKey, dstKey); err != nil {
-			return e.InternalServerError("copy failed", err)
+			return fail("copy failed", err, srcKey, dstKey)
 		}
 
 		// Verify source still exists.
+		phase = "source-attributes"
 		srcAttrs, srcErr := fsys.Attributes(srcKey)
 		srcExists := srcErr == nil
 
 		// Verify destination exists and matches.
+		phase = "destination-attributes"
 		dstAttrs, dstErr := fsys.Attributes(dstKey)
 		dstExists := dstErr == nil
 
@@ -110,6 +139,7 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 		// Read back destination bytes and compare with source content.
 		bytesMatch := false
 		if dstExists {
+			phase = "read-destination"
 			dstReader, err := fsys.GetReader(dstKey)
 			if err == nil {
 				defer dstReader.Close()
@@ -143,11 +173,7 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 			resp.Error = "destination content type does not match source"
 		}
 
-		status := http.StatusOK
-		if !resp.OK {
-			status = http.StatusInternalServerError
-		}
-		return e.JSON(status, resp)
+		return e.JSON(http.StatusOK, resp)
 	}).Bind(apis.RequireSuperuserAuth())
 }
 

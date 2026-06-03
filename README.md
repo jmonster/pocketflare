@@ -175,7 +175,7 @@ Terminology:
 - Download means [PocketBase] serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
 - Copy means [PocketBase]'s filesystem `Copy(src, dst)` method duplicated an existing object. Normal uploads, downloads, and migration imports do not use S3 `CopyObject`.
 
-With optional R2 API credentials, Copy uses server-side S3 `CopyObject`. Without those credentials, the fallback relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. The fallback path is runtime-proven up to 20 MiB via `scripts/proof-copy.sh`. The S3 `CopyObject` path is implemented and SigV4 signing is verified correct; end-to-end runtime proof requires an R2 API token with S3 `CopyObject` permission on the STORAGE bucket.
+Copy relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. The path is runtime-proven up to 20 MiB via `scripts/proof-copy.sh`. Server-side R2 S3 `CopyObject` was tested with scoped credentials and disposable deployed Workers, but Workers rejected `r2.cloudflarestorage.com` fetch URLs before HTTP, so that optimization is disabled.
 
 ## Backups and Restore
 
@@ -343,7 +343,7 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 - D1 collection import with interdependent new view collections fails at the PocketBase/Pocketflare layer (D1 raw SQL supports chained views — verified). Use DO SQLite or a two-step import as workaround.
 - Batch API requests run through PocketBase's upstream `/api/batch` handler; batch atomicity depends on whether the handler's internal flow queues reads after writes (see driver constraints).
 - Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are app-level optimizations, not required for PocketBase API compatibility.
-- R2 filesystem Copy has two paths: server-side `CopyObject` with optional R2 API credentials, or the Worker relay fallback. The fallback is runtime-proven up to 20 MiB. SigV4 signing for CopyObject is verified correct; E2E proof requires an R2 API token with S3 `PutObject` + `CopyObject` permission on the STORAGE bucket.
+- R2 filesystem Copy uses the Worker relay fallback. It is runtime-proven up to 20 MiB and does not hold the whole copied object in Go memory. Server-side S3 `CopyObject` is disabled because deployed Workers rejected R2 S3 endpoint fetches before HTTP.
 - Realtime/SSE requires the optional Durable Object binding. Without it, realtime is not supported on Workers.
 - [PocketBase] rate limiting uses [PocketBase]'s upstream in-memory limiter. On Workers this state is per isolate, not globally shared across isolates or regions. Use Cloudflare WAF/rate limiting for edge-wide abuse protection.
 - Cron requires the Workers Cron Trigger in `wrangler.toml`; it is not driven by [PocketBase]'s in-process ticker. The trigger calls `pb.Cron().RunDue()`, so the due-job selection is PocketBase's scheduler even though the wakeup source is Cloudflare.

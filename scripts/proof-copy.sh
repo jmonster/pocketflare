@@ -1,43 +1,19 @@
 #!/bin/bash
 # proof-copy.sh — Prove Pocketflare R2 filesystem Copy behavior.
 #
-# Runtime-proves the streaming fallback path against local wrangler dev.
-# The S3 CopyObject path requires a deployed Worker because the R2 S3 API
-# (*.r2.cloudflarestorage.com) is only reachable from Cloudflare's network.
-# See scripts/proof-d1-edge-fixtures-remote.sh for the remote proof pattern.
+# Runtime-proves the supported Worker relay copy path against local wrangler dev.
 #
 # Verifies:
 #   - Source and destination objects exist after copy
 #   - Bytes match exactly
 #   - Content type is preserved
-#   - Correct copy path is reported per mode
-#   - 1 KiB, 10 MiB, and 20 MiB sizes pass in each available mode
+#   - Correct copy path is reported
+#   - 1 KiB, 10 MiB, and 20 MiB sizes pass
 #   - Logs contain no copy errors
-#   - S3 mode: no streaming-fallback warning in logs
-#   - Fallback mode: streaming-fallback warning present in logs
+#   - Streaming-fallback warning is present in logs
 #
 # Usage:
 #   ./scripts/proof-copy.sh
-#
-# To prove against a token scoped to a non-default bucket:
-#   POCKETFLARE_PROOF_STORAGE_BUCKET=test ./scripts/proof-copy.sh
-#
-# Parent R2 API credentials (for S3 CopyObject proof):
-#   Set via environment variables:
-#     export R2_ACCESS_KEY_ID=...
-#     export R2_SECRET_ACCESS_KEY=...
-#     export R2_ACCOUNT_ID=...
-#   Or store in macOS Keychain:
-#     security add-generic-password -s pocketflare-r2-access-key-id -a "$USER" -w "<key>"
-#     security add-generic-password -s pocketflare-r2-secret-access-key -a "$USER" -w "<secret>"
-#     security add-generic-password -s pocketflare-r2-account-id -a "$USER" -w "<account-id>"
-#   If the account ID is omitted and wrangler is logged in to exactly one
-#   account, the script reads it from `wrangler whoami --json`.
-#
-# The script derives 15-minute temporary credentials in memory and passes those
-# into wrangler dev. S3 mode runs with --remote and a temporary Wrangler config
-# whose STORAGE binding points at the proof bucket. No temporary Cloudflare
-# resource is created or persisted.
 #
 # Requires: wrangler, jq, curl
 set -euo pipefail
@@ -49,8 +25,6 @@ mkdir -p "$ARTIFACT_DIR"
 
 PASS=0
 FAIL=0
-S3_SKIPPED=false
-
 ADMIN_EMAIL="proof-copy@test.local"
 ADMIN_PASSWORD="test123456"
 
@@ -59,165 +33,12 @@ green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 
 # ---------------------------------------------------------------------------
-# Credential sourcing — env vars first, then macOS Keychain.
-# Never prints credential values.
+# S3 CopyObject status
 # ---------------------------------------------------------------------------
 
-keychain_get() {
-	local service="$1"
-	security find-generic-password -s "$service" -a "$USER" -w 2>/dev/null || true
-}
-
-wrangler_account_id() {
-	local json count
-	json="$(pnpm exec wrangler whoami --json 2>/dev/null || true)"
-	count="$(echo "$json" | jq -r '.accounts | length' 2>/dev/null || echo 0)"
-	if [[ "$count" = "1" ]]; then
-		echo "$json" | jq -r '.accounts[0].id'
-	fi
-}
-
-source_credentials() {
-	R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
-	R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
-	R2_ACCOUNT_ID="${R2_ACCOUNT_ID:-}"
-
-	if [[ -z "$R2_ACCESS_KEY_ID" ]]; then
-		R2_ACCESS_KEY_ID="$(keychain_get "pocketflare-r2-access-key-id")"
-	fi
-	if [[ -z "$R2_SECRET_ACCESS_KEY" ]]; then
-		R2_SECRET_ACCESS_KEY="$(keychain_get "pocketflare-r2-secret-access-key")"
-	fi
-	if [[ -z "$R2_ACCOUNT_ID" ]]; then
-		R2_ACCOUNT_ID="$(keychain_get "pocketflare-r2-account-id")"
-	fi
-	if [[ -z "$R2_ACCOUNT_ID" && ( -n "$R2_ACCESS_KEY_ID" || -n "$R2_SECRET_ACCESS_KEY" ) ]]; then
-		R2_ACCOUNT_ID="$(wrangler_account_id)"
-	fi
-}
-
-have_credentials() {
-	[[ -n "${R2_ACCESS_KEY_ID:-}" ]] && [[ -n "${R2_SECRET_ACCESS_KEY:-}" ]] && [[ -n "${R2_ACCOUNT_ID:-}" ]]
-}
-
-storage_bucket_name() {
-	if [[ -n "${POCKETFLARE_PROOF_STORAGE_BUCKET:-}" ]]; then
-		echo "$POCKETFLARE_PROOF_STORAGE_BUCKET"
-		return 0
-	fi
-	awk '
-		$0 ~ /^\[\[r2_buckets\]\]/ { in_bucket = 1; binding = ""; name = ""; next }
-		in_bucket && $1 == "binding" {
-			binding = $3
-			gsub(/"/, "", binding)
-			next
-		}
-		in_bucket && $1 == "bucket_name" {
-			name = $3
-			gsub(/"/, "", name)
-			if (binding == "STORAGE") {
-				print name
-				exit
-			}
-			next
-		}
-		in_bucket && $0 ~ /^\[/ { in_bucket = 0 }
-	' "$ROOT/wrangler.toml"
-}
-
-write_wrangler_config_for_storage_bucket() {
-	local bucket="$1"
-	local out="$2"
-
-	awk -v proof_bucket="$bucket" '
-		$0 ~ /^\[\[r2_buckets\]\]/ {
-			in_bucket = 1
-			seen_binding = 0
-			is_storage = 0
-			print
-			next
-		}
-		in_bucket && $1 == "binding" {
-			binding = $3
-			gsub(/"/, "", binding)
-			is_storage = (binding == "STORAGE")
-			seen_binding = 1
-			print
-			next
-		}
-		in_bucket && $1 == "bucket_name" && is_storage {
-			print "bucket_name = \"" proof_bucket "\""
-			next
-		}
-		in_bucket && $0 ~ /^\[/ {
-			in_bucket = 0
-		}
-		{ print }
-	' "$ROOT/wrangler.toml" > "$out"
-}
-
-mint_temp_credentials() {
-	local bucket="$1"
-	local ttl="${2:-900}"
-	local json
-
-	json=$(R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
-		R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-		R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
-		R2_TEMP_BUCKET="$bucket" \
-		R2_TEMP_TTL="$ttl" \
-		node <<'NODE'
-const crypto = require("node:crypto");
-
-const required = ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID", "R2_TEMP_BUCKET"];
-for (const key of required) {
-  if (!process.env[key]) {
-    throw new Error(`${key} is required`);
-  }
-}
-
-function b64url(value) {
-  return Buffer.from(value).toString("base64url");
-}
-
-const now = Math.floor(Date.now() / 1000);
-const ttl = Number(process.env.R2_TEMP_TTL || "900");
-const accountId = process.env.R2_ACCOUNT_ID;
-const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-const bucket = process.env.R2_TEMP_BUCKET;
-const endpointHost = `${accountId}.r2.cloudflarestorage.com`;
-
-const header = { alg: "HS256", typ: "JWT" };
-const payload = {
-  bucket,
-  scope: "object-read-write",
-  actions: ["CopyObject"],
-  paths: { prefixPaths: ["proof-copy/"], objectPaths: [] },
-  sub: accountId,
-  iss: accessKeyId,
-  aud: endpointHost,
-  iat: now,
-  exp: now + ttl,
-};
-
-const unsigned = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
-const signature = crypto.createHmac("sha256", secretAccessKey).update(unsigned).digest("base64url");
-const jwt = `${unsigned}.${signature}`;
-const tempSecret = crypto.createHash("sha256").update(jwt).digest("hex");
-
-process.stdout.write(JSON.stringify({
-  accessKeyId,
-  secretAccessKey: tempSecret,
-  sessionToken: Buffer.from(`jwt/${jwt}`).toString("base64"),
-}));
-NODE
-)
-
-	TEMP_R2_ACCESS_KEY_ID="$(echo "$json" | jq -r .accessKeyId)"
-	TEMP_R2_SECRET_ACCESS_KEY="$(echo "$json" | jq -r .secretAccessKey)"
-	TEMP_R2_SESSION_TOKEN="$(echo "$json" | jq -r .sessionToken)"
-}
+# Server-side R2 S3 CopyObject is disabled. Deployed Worker E2E rejected
+# r2.cloudflarestorage.com fetch URLs before HTTP; this script proves the
+# supported Worker relay path.
 
 # ---------------------------------------------------------------------------
 # Assertion helper
@@ -231,6 +52,16 @@ assert() {
 	else
 		red "  FAIL: $desc"
 		FAIL=$((FAIL + 1))
+	fi
+}
+
+print_response_error() {
+	local label="$1"
+	local resp="$2"
+	local err
+	err=$(echo "$resp" | jq -r '.error // empty' 2>/dev/null || true)
+	if [[ -n "$err" ]]; then
+		red "  $label error: $err"
 	fi
 }
 
@@ -307,7 +138,7 @@ stop_wrangler() {
 # ---------------------------------------------------------------------------
 
 run_proof_suite() {
-	local label="$1"          # e.g. "S3 CopyObject" or "streaming fallback"
+	local label="$1"
 	local expected_path="$2"  # "s3-copy-object" or "streaming-fallback"
 	local artifact_dir="$3"
 	shift 3
@@ -363,6 +194,9 @@ run_proof_suite() {
 	probe_path=$(echo "$probe" | jq -r .copyPath 2>/dev/null || echo "unknown")
 
 	echo "  Active copy path: $probe_path"
+	if [[ "$probe_ok" != "true" ]]; then
+		print_response_error "$label probe" "$probe"
+	fi
 	assert "$label: proof route responds ok" '[ "$probe_ok" = "true" ]'
 	assert "$label: copyPath=$expected_path" '[ "$probe_path" = "$expected_path" ]'
 
@@ -373,6 +207,9 @@ run_proof_suite() {
 		-H "Content-Type: application/json" \
 		-d '{"size": 1024, "contentType": "text/plain"}' 2>/dev/null)
 	ok=$(echo "$resp" | jq -r .ok 2>/dev/null || echo "false")
+	if [[ "$ok" != "true" ]]; then
+		print_response_error "$label 1 KiB" "$resp"
+	fi
 	assert "$label: 1 KiB ok" '[ "$ok" = "true" ]'
 	assert "$label: 1 KiB bytes match" '[ "$(echo "$resp" | jq -r .bytesMatch)" = "true" ]'
 	assert "$label: 1 KiB content type matches" '[ "$(echo "$resp" | jq -r .contentTypeMatch)" = "true" ]'
@@ -384,6 +221,9 @@ run_proof_suite() {
 		-H "Content-Type: application/json" \
 		-d '{"size": 10485760, "contentType": "application/octet-stream"}' 2>/dev/null)
 	ok=$(echo "$resp" | jq -r .ok 2>/dev/null || echo "false")
+	if [[ "$ok" != "true" ]]; then
+		print_response_error "$label 10 MiB" "$resp"
+	fi
 	assert "$label: 10 MiB ok" '[ "$ok" = "true" ]'
 	assert "$label: 10 MiB bytes match" '[ "$(echo "$resp" | jq -r .bytesMatch)" = "true" ]'
 	assert "$label: 10 MiB content type matches" '[ "$(echo "$resp" | jq -r .contentTypeMatch)" = "true" ]'
@@ -395,6 +235,9 @@ run_proof_suite() {
 		-H "Content-Type: application/json" \
 		-d '{"size": 20971520, "contentType": "application/octet-stream"}' 2>/dev/null)
 	ok=$(echo "$resp" | jq -r .ok 2>/dev/null || echo "false")
+	if [[ "$ok" != "true" ]]; then
+		print_response_error "$label 20 MiB" "$resp"
+	fi
 	assert "$label: 20 MiB ok" '[ "$ok" = "true" ]'
 	assert "$label: 20 MiB bytes match" '[ "$(echo "$resp" | jq -r .bytesMatch)" = "true" ]'
 	assert "$label: 20 MiB content type matches" '[ "$(echo "$resp" | jq -r .contentTypeMatch)" = "true" ]'
@@ -404,7 +247,7 @@ run_proof_suite() {
 	local s3_errs stream_errs fallback_warn
 	s3_errs=$(grep -c "s3 copy: HTTP" "$artifact_dir/dev.log" 2>/dev/null) || s3_errs=0
 	stream_errs=$(grep -c "r2 streaming copy write:\|r2 streaming copy pipe:" "$artifact_dir/dev.log" 2>/dev/null) || stream_errs=0
-	fallback_warn=$(grep -c "copies will stream through Worker" "$artifact_dir/dev.log" 2>/dev/null) || fallback_warn=0
+	fallback_warn=$(grep -c "copies stream through Worker" "$artifact_dir/dev.log" 2>/dev/null) || fallback_warn=0
 
 	assert "$label: no s3 copy HTTP errors in logs" '[ "$s3_errs" = "0" ]'
 	assert "$label: no streaming copy errors in logs" '[ "$stream_errs" = "0" ]'
@@ -426,47 +269,9 @@ echo "=== Pocketflare R2 Copy Proof ==="
 echo "artifacts: $ARTIFACT_DIR"
 echo ""
 
-# Source credentials from env or Keychain.
-source_credentials
-
-# ── S3 CopyObject mode (credentials required) ──
-if have_credentials; then
-	STORAGE_BUCKET="$(storage_bucket_name)"
-	if [[ -z "$STORAGE_BUCKET" ]]; then
-		red "  FAIL: could not find STORAGE bucket_name in wrangler.toml"
-		FAIL=$((FAIL + 1))
-	else
-		echo "R2 parent credentials: configured"
-		echo "Temporary S3 credentials: minted in memory, scoped to $STORAGE_BUCKET/proof-copy/, ttl=900s"
-		mint_temp_credentials "$STORAGE_BUCKET" 900
-
-		S3_DIR="$ARTIFACT_DIR/s3"
-		mkdir -p "$S3_DIR"
-		S3_CONFIG="$S3_DIR/wrangler.toml"
-		write_wrangler_config_for_storage_bucket "$STORAGE_BUCKET" "$S3_CONFIG"
-		WRANGLER_CONFIG="$S3_CONFIG"
-		WRANGLER_REMOTE=true
-		run_proof_suite "S3 CopyObject" "s3-copy-object" "$S3_DIR" \
-			--var "POCKETFLARE_STORAGE_BUCKET_NAME:${STORAGE_BUCKET}" \
-			--var "R2_ACCESS_KEY_ID:${TEMP_R2_ACCESS_KEY_ID}" \
-			--var "R2_SECRET_ACCESS_KEY:${TEMP_R2_SECRET_ACCESS_KEY}" \
-			--var "R2_ACCOUNT_ID:${R2_ACCOUNT_ID}" \
-			--var "R2_SESSION_TOKEN:${TEMP_R2_SESSION_TOKEN}" || true
-		WRANGLER_CONFIG=""
-		WRANGLER_REMOTE=false
-	fi
-elif [[ -n "${R2_ACCESS_KEY_ID:-}" || -n "${R2_SECRET_ACCESS_KEY:-}" ]]; then
-	S3_DIR="$ARTIFACT_DIR/s3"
-	mkdir -p "$S3_DIR"
-	red "  FAIL: incomplete R2 parent credentials; set R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_ACCOUNT_ID"
-	FAIL=$((FAIL + 1))
-else
-	S3_SKIPPED=true
-	yellow ""
-	yellow "R2 parent credentials not configured — S3 CopyObject runtime proof will be skipped."
-	yellow "Set env vars R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID"
-	yellow "or store in macOS Keychain (pocketflare-r2-*) and re-run."
-fi
+yellow ""
+yellow "S3 CopyObject runtime proof: DISABLED (deployed Workers reject r2.cloudflarestorage.com fetch URLs before HTTP)"
+yellow "Running supported streaming fallback proof."
 
 # ── Streaming fallback mode (always runs) ──
 FALLBACK_DIR="$ARTIFACT_DIR/fallback"
@@ -478,11 +283,6 @@ echo ""
 echo "========================================="
 TOTAL=$((PASS + FAIL))
 echo "Results: $PASS/$TOTAL passed"
-if $S3_SKIPPED; then
-	yellow ""
-	yellow "S3 CopyObject runtime proof: SKIPPED (parent credentials not configured)"
-	yellow ""
-fi
 if [ "$FAIL" -eq 0 ]; then
 	green "R2 COPY PROOF PASSED"
 	exit 0
