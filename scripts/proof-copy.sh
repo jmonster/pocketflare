@@ -19,6 +19,9 @@
 # Usage:
 #   ./scripts/proof-copy.sh
 #
+# To prove against a token scoped to a non-default bucket:
+#   POCKETFLARE_PROOF_STORAGE_BUCKET=test ./scripts/proof-copy.sh
+#
 # Parent R2 API credentials (for S3 CopyObject proof):
 #   Set via environment variables:
 #     export R2_ACCESS_KEY_ID=...
@@ -32,7 +35,9 @@
 #   account, the script reads it from `wrangler whoami --json`.
 #
 # The script derives 15-minute temporary credentials in memory and passes those
-# into wrangler dev. No temporary Cloudflare resource is created or persisted.
+# into wrangler dev. S3 mode runs with --remote and a temporary Wrangler config
+# whose STORAGE binding points at the proof bucket. No temporary Cloudflare
+# resource is created or persisted.
 #
 # Requires: wrangler, jq, curl
 set -euo pipefail
@@ -96,6 +101,10 @@ have_credentials() {
 }
 
 storage_bucket_name() {
+	if [[ -n "${POCKETFLARE_PROOF_STORAGE_BUCKET:-}" ]]; then
+		echo "$POCKETFLARE_PROOF_STORAGE_BUCKET"
+		return 0
+	fi
 	awk '
 		$0 ~ /^\[\[r2_buckets\]\]/ { in_bucket = 1; binding = ""; name = ""; next }
 		in_bucket && $1 == "binding" {
@@ -114,6 +123,37 @@ storage_bucket_name() {
 		}
 		in_bucket && $0 ~ /^\[/ { in_bucket = 0 }
 	' "$ROOT/wrangler.toml"
+}
+
+write_wrangler_config_for_storage_bucket() {
+	local bucket="$1"
+	local out="$2"
+
+	awk -v proof_bucket="$bucket" '
+		$0 ~ /^\[\[r2_buckets\]\]/ {
+			in_bucket = 1
+			seen_binding = 0
+			is_storage = 0
+			print
+			next
+		}
+		in_bucket && $1 == "binding" {
+			binding = $3
+			gsub(/"/, "", binding)
+			is_storage = (binding == "STORAGE")
+			seen_binding = 1
+			print
+			next
+		}
+		in_bucket && $1 == "bucket_name" && is_storage {
+			print "bucket_name = \"" proof_bucket "\""
+			next
+		}
+		in_bucket && $0 ~ /^\[/ {
+			in_bucket = 0
+		}
+		{ print }
+	' "$ROOT/wrangler.toml" > "$out"
 }
 
 mint_temp_credentials() {
@@ -200,18 +240,28 @@ assert() {
 
 WRANGLER_PID=""
 BASE=""
+WRANGLER_CONFIG=""
+WRANGLER_REMOTE=false
 
 start_wrangler() {
 	local artifact_dir="$1"
 	shift
 
 	cd "$ROOT"
-	pnpm exec wrangler dev --port 0 \
+	local cmd=(pnpm exec wrangler dev --port 0)
+	if [[ -n "$WRANGLER_CONFIG" ]]; then
+		cmd+=(--config "$WRANGLER_CONFIG")
+	fi
+	if [[ "$WRANGLER_REMOTE" == "true" ]]; then
+		cmd+=(--remote)
+	fi
+	cmd+=(
 		--var POCKETFLARE_ADMIN_EMAIL:"$ADMIN_EMAIL" \
 		--var POCKETFLARE_ADMIN_PASSWORD:"$ADMIN_PASSWORD" \
-		--var POCKETFLARE_ENABLE_PROOF_ROUTES:1 \
-		"$@" \
-		> "$artifact_dir/dev.log" 2>&1 &
+		--var POCKETFLARE_ENABLE_PROOF_ROUTES:1
+	)
+	cmd+=("$@")
+	"${cmd[@]}" > "$artifact_dir/dev.log" 2>&1 &
 	WRANGLER_PID=$!
 }
 
@@ -392,11 +442,18 @@ if have_credentials; then
 
 		S3_DIR="$ARTIFACT_DIR/s3"
 		mkdir -p "$S3_DIR"
+		S3_CONFIG="$S3_DIR/wrangler.toml"
+		write_wrangler_config_for_storage_bucket "$STORAGE_BUCKET" "$S3_CONFIG"
+		WRANGLER_CONFIG="$S3_CONFIG"
+		WRANGLER_REMOTE=true
 		run_proof_suite "S3 CopyObject" "s3-copy-object" "$S3_DIR" \
+			--var "POCKETFLARE_STORAGE_BUCKET_NAME:${STORAGE_BUCKET}" \
 			--var "R2_ACCESS_KEY_ID:${TEMP_R2_ACCESS_KEY_ID}" \
 			--var "R2_SECRET_ACCESS_KEY:${TEMP_R2_SECRET_ACCESS_KEY}" \
 			--var "R2_ACCOUNT_ID:${R2_ACCOUNT_ID}" \
 			--var "R2_SESSION_TOKEN:${TEMP_R2_SESSION_TOKEN}" || true
+		WRANGLER_CONFIG=""
+		WRANGLER_REMOTE=false
 	fi
 elif [[ -n "${R2_ACCESS_KEY_ID:-}" || -n "${R2_SECRET_ACCESS_KEY:-}" ]]; then
 	S3_DIR="$ARTIFACT_DIR/s3"
