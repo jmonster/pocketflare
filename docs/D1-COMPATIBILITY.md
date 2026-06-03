@@ -112,17 +112,12 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 | Production realtime (DO) | `scripts/proof-realtime-production.sh` | Remote (deployed Worker) | None known; 14/14 assertions passed |
 | Cron in DO SQLite mode | `scripts/proof-cron.sh` (adapted) | Remote (deployed Worker) | None known; RunDue + full scheduled path proven |
 
-### Closed Platform Constraints
+### Closed Constraints
 
 Immutable Cloudflare limits that cannot be worked around in code:
 
 - **D1 interactive transactions**: D1 `batch()` requires all statements upfront; cannot read intermediate results of queued writes. This is fundamental to D1's architecture. Use DO SQLite for read-your-writes semantics.
 - **D1 batch size**: D1 `batch()` has a 100-bound-parameter limit per batch. Restore database import may hit this for tables with many wide rows.
-- **R2 S3 endpoint accessibility**: The R2 S3 API (`*.r2.cloudflarestorage.com`) is only reachable from within Cloudflare's network. Local `wrangler dev` cannot establish TLS to it.
-- **R2 S3 CopyObject**: Disabled after deployed Worker E2E rejected both `r2.cloudflarestorage.com` fetch URL forms before HTTP (see `3bd4ccb`). SigV4 signing was verified correct; the Cloudflare Workers runtime blocks outbound fetch to R2 S3 endpoints. The streaming relay fallback (proven up to 20 MiB via `scripts/proof-copy.sh`) handles filesystem Copy.
-
-### Operational Blockers
-- **D1 account limit**: The Cloudflare account has reached the maximum number of D1 databases. Creating isolated proof targets requires deleting unused databases first.
 
 ### Known Product Gaps
 

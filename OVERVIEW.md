@@ -67,7 +67,7 @@ A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives Po
 
 `STORAGE` and `BACKUPS` are used directly by the patched WASM filesystem path. Users do not need to enable PocketBase's S3 file-storage feature for normal file fields.
 
-Pocketflare does not build a new backup system. Use Cloudflare-native primitives for ongoing backups: D1 Time Travel/export, DO SQLite PITR, and R2 bucket backup/copy. PocketBase backup zips can be restored/imported into an empty Pocketflare target from the admin UI or CLI as a migration path from standalone PocketBase.
+Pocketflare does not build a new backup system. Use Cloudflare-native primitives for ongoing backups: D1 Time Travel/export, R2 bucket backup/copy, and DO SQLite PITR only if you wire an operator lane. PocketBase backup zips can be restored/imported into an empty Pocketflare target from the admin UI or CLI as a migration path from standalone PocketBase.
 
 `ASSETS` is not an R2 bucket. It is a Workers Assets binding. Matching static assets can be served by Cloudflare without invoking Worker code.
 
@@ -182,14 +182,17 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 
 ## Known Limits
 
-- **D1 transactions:** Pocketflare maps fixed write transactions to `D1Database.batch()`, which executes statements sequentially as a SQL transaction and rolls back the entire sequence on failure. Reads after queued writes fail deterministically before any partial persistence. Reads before writes are direct (non-isolated). D1 migrations run statement-by-statement because older PocketBase migrations read their own writes. See `docs/D1-COMPATIBILITY.md` for the full feature matrix.
-- **DO SQLite mode:** `POCKETFLARE_DB_MODE=do_sqlite` routes dynamic requests through `APP_DO`, a SQLite-backed Durable Object. This provides callback-scoped transactions with read-your-writes semantics. Tradeoff: the app database moves from D1 to a single Durable Object with different latency, cost, storage limit, and scaling characteristics. `PUT /api/collections/import` hangs in DO SQLite mode (proven by `scripts/proof-do-sqlite-view-chained.sh`); create views individually via `POST /api/collections` as workaround.
-- Uploads and downloads still pass through the Worker. Direct browser-to-R2 upload and signed R2 download redirects are possible app-level optimizations, not required for PocketBase API compatibility.
-- R2 filesystem Copy uses the Worker relay fallback. It is runtime-proven up to 20 MiB and does not hold the whole copied object in Go memory. Server-side S3 `CopyObject` is disabled after failing deployed Worker E2E at R2 S3 endpoint fetch.
-- Realtime/SSE without the optional Durable Object is non-functional on Workers (the WASM bridge `Flush()` is a no-op). Enabling the `RealtimeDO` binding in `wrangler.toml` adds cross-isolate SSE at ~$4/mo for the always-warm DO instance.
-- PocketBase cron is driven by Workers Cron Triggers (per-minute `scheduled` events) rather than the in-process `time.Ticker`. Each trigger calls `pb.Cron().RunDue()`, so due-job selection remains PocketBase's scheduler.
-- SMTP sockets have live Amazon SES STARTTLS proof only. Other providers can still vary by port, TLS mode, and auth behavior.
-- PocketBase upstream backup creation, auto backups, and backup S3 settings are not the ongoing backup strategy. Use Cloudflare-native primitives (D1 Time Travel/export, R2 object copy) for production backups. PocketBase backup zips can be restored into empty Pocketflare targets for migration. `scripts/proof-restore-cli.sh` proves the minimal fixture happy path, restore-token resume, and the large fixture (1000 records). Requires `POCKETFLARE_ADMIN_EMAIL`/`PASSWORD` env vars for admin access after restore. See `docs/production-backups.md` for the full backup strategy, supported recovery paths, and limitations.
+| Area | Limit | Reference |
+|---|---|---|
+| D1 transactions | Atomic fixed write batches only; no interactive read-after-write. Reads before writes are not isolated. | `docs/D1-COMPATIBILITY.md` |
+| D1 migrations | Run statement-by-statement, not in one outer transaction. | `docs/D1-COMPATIBILITY.md` |
+| DO SQLite import | `PUT /api/collections/import` hangs; creating views individually works. | `scripts/proof-do-sqlite-view-chained.sh` |
+| File transfer | Uploads/downloads pass through the Worker. Direct browser-to-R2 and signed R2 redirects are not built in. | `docs/storage-migration.md` |
+| R2 Copy | Worker relay fallback is proven to 20 MiB; server-side S3 `CopyObject` is disabled. | `scripts/proof-copy.sh` |
+| Realtime | Requires the optional `REALTIME_DO` binding. | `scripts/proof-realtime-production.sh` |
+| Cron | Workers Cron wakes the app; PocketBase `RunDue()` selects due jobs. | `scripts/proof-cron.sh` |
+| SMTP | Live SMTP proof is Amazon SES STARTTLS only. | `docs/email-implementation.md` |
+| Production backups | Use Cloudflare-native database and R2 backups; PocketBase zips are migration artifacts. | `docs/production-backups.md` |
 
 ## References
 

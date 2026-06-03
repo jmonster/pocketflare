@@ -2,7 +2,7 @@
 
 Pocketflare stores data across three Cloudflare resources. A complete production backup covers all three. This document defines the supported backup and recovery paths for each.
 
-PocketBase backup zips are migration artifacts, not complete Pocketflare production backups. They contain schema and data but not R2 objects. Restoring a PocketBase backup zip into an empty Pocketflare target (admin UI or `scripts/restore-backup.mjs`) is a migration path from standalone PocketBase, not the production backup strategy.
+PocketBase backup zips are migration artifacts, not complete Pocketflare production backups. They contain schema/data and any `storage/` files included in the source zip, but they are not a substitute for backing up the live R2 `STORAGE` bucket. Restoring a PocketBase backup zip into an empty Pocketflare target is a migration path from standalone PocketBase, not the production backup strategy.
 
 ## Resources to Back Up
 
@@ -122,9 +122,10 @@ This restores the entire SQLite database contents (tables and key-value data) to
 
 ### PocketBase Backup Zip
 
-In DO SQLite mode, PocketBase's built-in backup creation (`POST /api/backups`) archives the SQLite database and local storage files into a zip stored in the `BACKUPS` R2 bucket:
+In DO SQLite mode, PocketBase's built-in backup creation (`POST /api/backups`) creates a zip stored in the `BACKUPS` R2 bucket:
 
-- The backup includes `storage/` files tracked in `_files` table records, not arbitrary R2 objects.
+- The backup is useful as a clean-slate migration artifact.
+- It is not a managed PITR substitute and should not be the only production backup.
 - Backup creation is synchronous and may hit Worker CPU time limits for large databases.
 - Auto-backups (`POCKETBASE_AUTO_BACKUPS`) are not tested at scale on Workers.
 
@@ -136,7 +137,7 @@ Write a DO alarm handler that exports the SQLite database to an R2 bucket on a s
 
 ### Recommendation
 
-For production deployments that need managed, operator-accessible PITR, use D1 mode. DO SQLite mode is suited for development, low-stakes deployments, or apps where PocketBase backup zips are an acceptable recovery path. If you need DO SQLite PITR today, implement it in your DO class directly using the `ctx.storage.sql` bookmark methods.
+For production deployments that need operator-accessible PITR today, use D1 mode. DO SQLite mode is appropriate when transaction fidelity matters more than built-in recovery tooling, or when you are prepared to wire DO SQLite PITR yourself.
 
 ## R2 STORAGE Bucket
 
@@ -244,7 +245,7 @@ This performs non-destructive checks against the live Worker:
 3. **R2 key shape** — confirms the storage prefix convention is documented (does not require live objects).
 4. **wrangler.toml bindings** — verifies the local wrangler.toml declares all four backup-related bindings.
 
-For full restore-path verification, use `scripts/proof-restore-cli.sh` which exercises the end-to-end backup-zip restore flow against a `wrangler dev` Worker.
+For restore-path verification, use `scripts/proof-restore-cli.sh`; it exercises minimal restore, restore-token resume, and a 1000-record fixture against `wrangler dev`.
 
 ## Support Matrix
 

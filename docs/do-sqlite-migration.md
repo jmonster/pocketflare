@@ -17,13 +17,13 @@ The app database is a fresh SQLite database inside the Durable Object. No data m
 
 D1 and DO SQLite are separate storage backends with no automatic migration. D1 uses Cloudflare's distributed query engine; DO SQLite is a single-instance SQLite database owned by a Durable Object.
 
-**Migration between modes is not supported.** There is no tool, script, or API that converts a D1-backed Pocketflare app to DO SQLite mode or vice versa. The storage engines, transaction models, and deployment topologies are fundamentally different. If you need the other mode, deploy a new app with the desired `POCKETFLARE_DB_MODE` and migrate data via PocketBase's collection import/export API or backup zip restore. D1 and DO SQLite schemas are compatible — both use SQLite DDL — but timestamp and JSON column behavior may differ; test before switching traffic.
+**In-place mode switching is not supported.** Do not flip an existing D1 app to DO SQLite by changing `POCKETFLARE_DB_MODE`. Deploy a new app with the target mode and migrate data with a backup zip restore or a tested app-specific export/import path. D1 and DO SQLite both use SQLite-shaped schema, but their storage engines, transaction behavior, and deployment topology differ.
 
 ### Standalone PocketBase (SQLite) → DO SQLite mode
 
-PocketBase's SQLite `.db` file is compatible with DO SQLite's SQL engine. Two migration paths are available:
+PocketBase's SQLite `.db` file is compatible with DO SQLite's SQL engine.
 
-**Option A: Backup zip restore (recommended)**
+**Backup zip restore (recommended)**
 
 1. Create a PocketBase backup:
    ```sh
@@ -39,27 +39,7 @@ PocketBase's SQLite `.db` file is compatible with DO SQLite's SQL engine. Two mi
 
 This imports schema, data, settings, superusers, and local `storage/` files in a single flow.
 
-**Option B: Manual collection import**
-
-1. Export the PocketBase database:
-   ```sh
-   pocketbase backup create
-   # or: sqlite3 pb_data/data.db .dump > export.sql
-   ```
-
-2. Deploy a new Pocketflare app with `POCKETFLARE_DB_MODE = "do_sqlite"`.
-
-3. Import via PocketBase's collection import API:
-   ```sh
-   curl -X POST https://your-app.workers.dev/api/collections/import \
-     -H "Authorization: <admin-token>" \
-     -F "data=@export.json"
-   ```
-
-4. Re-upload file attachments to R2 (files stored in PocketBase's local filesystem
-   must be uploaded separately; Pocketflare uses R2, not local disk).
-
-5. Verify all collections, auth records, and file references before switching DNS.
+Manual collection import is not recommended in DO SQLite mode because `PUT /api/collections/import` currently hangs. If you need a manual path, create collections one at a time with `POST /api/collections`, upload files to R2 separately, and verify the result before switching traffic.
 
 ### Verification Checklist
 
