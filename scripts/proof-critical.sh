@@ -33,15 +33,23 @@ mkdir -p "$ARTIFACT_DIR"
 
 PASS=0
 FAIL=0
+COVERAGE_MISSING=0
 
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
 red() { printf "\033[31m%s\033[0m\n" "$*" >&2; }
 status_key() { printf '%s' "$1" | tr ' /:()+-' '_______' | tr -cd '[:alnum:]_'; }
 coverage_status() {
-	local path="$1" script="$2" key var status
+	local path="$1" script="$2" required="${3:-required}" key var status
 	key="$(status_key "$script")"
 	var="step_status_$key"
-	status="${!var:-NOT RUN}"
+	if [[ -z "${!var+x}" ]]; then
+		status="NOT RUN"
+		if [[ "$required" == "required" ]]; then
+			COVERAGE_MISSING=$((COVERAGE_MISSING + 1))
+		fi
+	else
+		status="${!var}"
+	fi
 	printf "  %-30s %s\n" "$path" "$status"
 }
 
@@ -132,6 +140,11 @@ if [[ "$REMOTE" == "true" ]]; then
 fi
 
 echo "Artifacts: $ARTIFACT_DIR"
+
+if [[ "$COVERAGE_MISSING" -gt 0 ]]; then
+	red "Coverage table references $COVERAGE_MISSING step(s) that did not run."
+	exit 1
+fi
 
 if [[ "$FAIL" -gt 0 ]]; then
 	exit 1
