@@ -104,15 +104,7 @@ Admin setup uses Pocketflare's `/_pf` route. When no real superuser exists, it r
 
 ## Email
 
-Pocketflare replaces PocketBase's Go `net/smtp` transport in the Workers build. Provider selection priority is:
-
-1. `POCKETFLARE_MAIL_PROVIDER`: `resend`, `postmark`, `sendgrid`, `mailgun`, `smtp`, or `webhook`.
-2. `POCKETFLARE_MAIL_WEBHOOK_URL`: legacy generic webhook mode.
-3. PocketBase admin SMTP settings, delivered through the Workers sockets SMTP transport.
-
-SMTP over Workers sockets has live proof only with Amazon SES STARTTLS on port 587. Other providers can still vary by port, TLS mode, and auth behavior. Workers block outbound port 25.
-
-The shared payload format includes `from`, `to`, `cc`, `bcc`, `subject`, `html`, `text`, headers, and base64 attachments up to 10 MiB each. See `docs/email-implementation.md`.
+See [Email Implementation](docs/email-implementation.md) for provider details.
 
 ## File Storage Behavior
 
@@ -120,9 +112,7 @@ Pocketflare's WASM build ignores PocketBase's upstream local/S3 filesystem selec
 
 The standard PocketBase file API still proxies uploads and downloads through PocketBase. Upstream S3 mode does not make normal file-field uploads direct-to-S3. Direct browser-to-R2 uploads, signed R2 download redirects, or a public R2 custom domain would require explicit Pocketflare routes that preserve PocketBase access rules.
 
-Uploads use a chunked R2 multipart writer: PocketBase receives the file through the API, the adapter buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
-
-Copies are separate from uploads. They happen only when PocketBase's filesystem `Copy(src, dst)` method duplicates an existing object. Copy uses a Worker relay with `FixedLengthStream` and is runtime-proven up to 20 MiB. Server-side R2 S3 `CopyObject` was tested with scoped credentials, but deployed Workers rejected `r2.cloudflarestorage.com` fetch URLs before HTTP, so that optimization is disabled.
+File storage uses R2 via the Worker. See [Storage Migration](docs/storage-migration.md) for upload/copy/migration details.
 
 ## Migrating Existing PocketBase Projects
 
@@ -183,11 +173,20 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
    make deploy
    ```
 
+## Patch Pattern
+
+Pocketflare patches upstream PocketBase to add narrow extension points. Each patch follows a consistent pattern:
+
+- **Patches add hooks** -- function pointers (`RunInTransactionHook`, `WasmRealtimeClientProvider`), exported methods (`SetId`, `RunDue`), config flags (`SkipSystemMigrations`, `RunMigrationsWithoutTransaction`), and build-tagged files. They are minimal by design: the smallest possible change that exposes an integration point.
+- **Adapter provides implementations** -- `adapter/` sets those hooks at startup with Workers-specific behavior (D1 driver, R2 filesystem, DO SQLite transactions, DO realtime bridge).
+
+When adding new behavior, prefer `adapter/`, `worker.mjs`, or configuration over patching PocketBase source. Patches should only exist where upstream PocketBase has to expose a hook or avoid unsupported WASM behavior.
+
 ## Known Limits
 
 | Area | Limit | Reference |
 |---|---|---|
-| D1 transactions | Atomic fixed write batches only; no interactive read-after-write. Reads before writes are not isolated. | `docs/D1-COMPATIBILITY.md` |
+| D1 transactions | Uses batch transactions. See [D1 Compatibility](docs/D1-COMPATIBILITY.md) for the full matrix. | |
 | D1 migrations | Run statement-by-statement, not in one outer transaction. | `docs/D1-COMPATIBILITY.md` |
 | DO SQLite import | `PUT /api/collections/import` hangs; creating views individually works. | `scripts/proof-do-sqlite-view-chained.sh` |
 | File transfer | Uploads/downloads pass through the Worker. Direct browser-to-R2 and signed R2 redirects are not built in. | `docs/storage-migration.md` |
@@ -195,7 +194,7 @@ Copies are separate from uploads. They happen only when PocketBase's filesystem 
 | Realtime | Requires the optional `REALTIME_DO` binding. | `scripts/proof-realtime-production.sh` |
 | Cron | Workers Cron wakes the app; PocketBase `RunDue()` selects due jobs. | `scripts/proof-cron.sh` |
 | SMTP | Live SMTP proof is Amazon SES STARTTLS only. | `docs/email-implementation.md` |
-| Production backups | Use Cloudflare-native database and R2 backups; PocketBase zips are migration artifacts. | `docs/production-backups.md` |
+| Production backups | See [Production Backups](docs/production-backups.md) for the complete backup strategy. | |
 
 ## References
 

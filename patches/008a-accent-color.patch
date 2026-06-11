@@ -1,0 +1,13 @@
+diff --git a/core/settings_model.go b/core/settings_model.go
+index 0e57d42..77c25a0 100644
+--- a/core/settings_model.go
++++ b/core/settings_model.go
+@@ -147,7 +147,7 @@ func newDefaultSettings() *Settings {
+ 		isNew: true,
+ 		settings: settings{
+ 			Meta: MetaConfig{
+-				AccentColor:   "#1055c9",
++					AccentColor:   "#404041",
+ 				AppName:       "Acme",
+ 				AppURL:        "http://localhost:8090",
+ 				HideControls:  false,

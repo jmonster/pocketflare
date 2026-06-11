@@ -1,4 +1,4 @@
-.PHONY: build deploy dev clean update-pb proof-critical
+.PHONY: build deploy dev clean update-pb admin-ui-overlays brand proof proof-critical
 
 build:
 	mkdir -p dist
@@ -17,5 +17,11 @@ clean:
 update-pb:
 	./scripts/update-pb.sh
 
+admin-ui-overlays:
+	./scripts/apply-admin-ui-overlays.sh
+
+brand: admin-ui-overlays
+
+proof: proof-critical
 proof-critical:
 	./scripts/proof-critical.sh

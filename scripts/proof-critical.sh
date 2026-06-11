@@ -36,6 +36,14 @@ FAIL=0
 
 green() { printf "\033[32m%s\033[0m\n" "$*"; }
 red() { printf "\033[31m%s\033[0m\n" "$*" >&2; }
+status_key() { printf '%s' "$1" | tr ' /:()+-' '_______' | tr -cd '[:alnum:]_'; }
+coverage_status() {
+	local path="$1" script="$2" key var status
+	key="$(status_key "$script")"
+	var="step_status_$key"
+	status="${!var:-NOT RUN}"
+	printf "  %-30s %s\n" "$path" "$status"
+}
 
 run_step() {
 	local name="$1"
@@ -43,15 +51,19 @@ run_step() {
 	local safe_name
 	safe_name="$(echo "$name" | tr ' /:' '---' | tr -cd '[:alnum:]_.-')"
 	local log="$ARTIFACT_DIR/$safe_name.log"
+	local key
+	key="$(status_key "$name")"
 
 	echo "── $name ──"
 	if (cd "$ROOT" && "$@" > "$log" 2>&1); then
 		green "  PASS: $name"
+		printf -v "step_status_$key" '%s' PASS
 		PASS=$((PASS + 1))
 	else
 		red "  FAIL: $name"
 		red "  log: $log"
 		tail -80 "$log" >&2 || true
+		printf -v "step_status_$key" '%s' FAIL
 		FAIL=$((FAIL + 1))
 		return 1
 	fi
@@ -90,6 +102,8 @@ run_step "D1 bootstrap proof" ./scripts/proof-d1-bootstrap.sh
 run_step "DO SQLite chained-view proof" ./scripts/proof-do-sqlite-view-chained.sh
 run_step "R2 copy proof" ./scripts/proof-copy.sh
 run_step "cron proof" ./scripts/proof-cron.sh
+run_step "D1 edge fixtures proof" ./scripts/proof-d1-edge-fixtures.sh
+run_step "realtime proof" ./scripts/proof-realtime.sh
 
 if [[ "$REMOTE" == "true" ]]; then
 	run_step "remote D1 edge fixtures proof" ./scripts/proof-d1-edge-fixtures-remote.sh
@@ -98,6 +112,25 @@ fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
+
+echo ""
+echo "── Coverage ──"
+printf "  %-30s %s\n" "Critical Path" "Proven"
+printf "  %-30s %s\n" "──────────────────────────────" "──────"
+coverage_status "restore (minimal + large)" "restore CLI proof"
+coverage_status "D1 bootstrap" "D1 bootstrap proof"
+coverage_status "D1 edge fixtures" "D1 edge fixtures proof"
+coverage_status "DO SQLite chained views" "DO SQLite chained-view proof"
+coverage_status "realtime (local bridge)" "realtime proof"
+coverage_status "cron" "cron proof"
+coverage_status "R2 copy fallback" "R2 copy proof"
+coverage_status "patch replay" "patch replay"
+coverage_status "deploy dry-run" "deploy dry-run"
+if [[ "$REMOTE" == "true" ]]; then
+  coverage_status "D1 edge fixtures (remote)" "remote D1 edge fixtures proof"
+  coverage_status "realtime (production)" "production realtime proof"
+fi
+
 echo "Artifacts: $ARTIFACT_DIR"
 
 if [[ "$FAIL" -gt 0 ]]; then

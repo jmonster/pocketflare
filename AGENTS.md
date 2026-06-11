@@ -8,7 +8,7 @@ node scripts/check-pb-version.mjs
 make build                   # compile Go WASM and copy JS runtime files into dist/
 make deploy                  # build, then pnpm exec wrangler deploy
 make dev                     # pnpm exec wrangler dev
-make proof-critical          # canonical local proof lane
+make proof                   # canonical local proof lane (proof-critical is an alias)
 ./scripts/scaffold-project.sh
 node scripts/doctor.mjs <url> --token <token>           # deployment health check
 node scripts/backup-verify.mjs <url> --token <token>    # backup readiness check
@@ -110,27 +110,7 @@ Cloudflare's default static-asset routing can serve matching files without Worke
 
 ## PocketBase Patch Set
 
-Managed by `scripts/update-pb.sh` against PocketBase v0.39.1. 17 patches.
-
-| Patch | Purpose | Upstream? |
-|---|---|---|
-| `000-base-wasm-stubs.patch` | Build-tag split of data-dir and fsnotify into `_unix.go`/`_wasm.go` stubs. | No |
-| `001-bootstrap-wasm.patch` | Split OS data-dir and filesystem setup from `Bootstrap()` into build-tagged methods. | No |
-| `002-filesystem-wasm.patch` | Injectable WASM filesystem constructors used by the adapter for R2. | No |
-| `003-nil-body-fix.patch` | Guard nil `ReadCloser` from Workers GET requests in `RereadableReadCloser`. | Yes |
-| `004-filesystem-newblob.patch` | Add `filesystem.NewBlob(blob.Driver)` for R2-backed storage. | Yes |
-| `005-cron-rundue.patch` | Expose `RunDue()` for external cron trigger integrations. | Yes |
-| `006-realtime-wasm.patch` | `WasmRealtimeClientProvider` for Worker WebSocket/Durable Object bridge. | No |
-| `007-defaultclient-setid.patch` | `SetId()` on DefaultClient for external client managers. | Yes |
-| `008-pocketflare-branding.patch` | Pocketflare admin UI branding: accent color, logo, CSS, version suffix. | No |
-| `009-idempotent-migrations.patch` | `CREATE TABLE IF NOT EXISTS` and `SaveNoValidate` for D1 re-bootstrap resilience. | Partial |
-| `010-d1-transaction-compat.patch` | D1 batch transaction workarounds: precompute outside tx, cascade before delete, split SQL. | No |
-| `011-do-sqlite-transaction-hook.patch` | `RunInTransactionHook` for DO SQLite `ctx.storage.transactionSync()`. | No |
-| `012-d1-migrations-without-outer-tx.patch` | `RunMigrationsWithoutTransaction` flag for D1 batch migration runner. | No |
-| `013-active-restore-bootstrap.patch` | `SkipSystemMigrations` config for active restore against half-restored databases. | No |
-| `015-restore-feature.patch` | Backup restore UI: `pocketflareRestore.js`, JSZip, sql.js WASM. | No |
-| `016-storage-settings.patch` | Replace upstream S3 settings form with R2/D1 guidance text. | No |
-| `017-d1-parity-fixes.patch` | D1 parity: collection import view caching, multi-level cascade deletes, SQL route hardening, restore resume/start-over. | No |
+Managed by `scripts/update-pb.sh` against PocketBase v0.39.1. 18 patches. See [patches/MANIFEST.md](patches/MANIFEST.md) for the full manifest.
 
 **Upstream?** column: Yes = could be proposed to PocketBase (no platform assumptions). No = Pocketflare-specific platform constraint. Partial = mix of both.
 
@@ -166,17 +146,7 @@ After replaying patches and rebuilding generated assets, run the narrow proofs:
 
 ## D1 Transaction Constraint
 
-Cloudflare D1 supports atomic multi-statement transactions through `D1Database.batch()`, which executes prepared statements sequentially as a SQL transaction and rolls back the entire sequence on failure. `adapter/wasmdb/driver.go` maps `database/sql` transactions to D1 batch: writes are queued during the transaction callback and committed atomically at `Commit()`. Rollback drops the queue without any persistence.
-
-Constraints:
-- **Query-after-write fails.** After any queued write inside a transaction, subsequent `QueryContext` calls return a deterministic error. This prevents partial commits and makes unsupported interactive transaction shapes loud.
-- **Reads before writes are not isolated.** A `QueryContext` before any queued write executes directly against D1 but is not transactionally isolated with the later batch.
-- **Pending results are opaque.** `RowsAffected` and `LastInsertId` error until after commit; code that inspects these inside the transaction callback is incompatible with deferred batch commit.
-- Some upstream PocketBase paths interleave reads and writes inside `RunInTransaction` and need targeted patches (see `docs/D1-COMPATIBILITY.md` for the full matrix).
-- D1 mode sets `core.RunMigrationsWithoutTransaction = true` before `Bootstrap()`. PocketBase migrations run statement-by-statement on D1 because older upstream migrations read their own writes.
-- When a query-after-write is blocked, the driver emits a structured log line to stderr: `{"family":"pocketflare-driver","event":"query-after-write-blocked","queuedWrites":N,"query":"..."}`. Use `wrangler tail` to identify which paths need patching.
-- For upstream SQLite transaction semantics, use optional DO SQLite mode (`POCKETFLARE_DB_MODE=do_sqlite` plus `APP_DO`). D1 remains the default for cost and availability.
-- DO SQLite mode runs dynamic requests inside the `AppDO` Durable Object and uses `ctx.storage.sql` plus `ctx.storage.transactionSync()`.
+D1 uses batch transactions with specific read/write ordering constraints. See [D1 Compatibility](docs/D1-COMPATIBILITY.md) for the full matrix, diagnostics, and proof coverage.
 
 ## D1 Data Import (migrating from SQLite PocketBase)
 
@@ -217,12 +187,4 @@ Do not run broad suites unless requested. Do not rerun failures without diagnosi
 
 ## Email
 
-PocketBase's built-in SMTP client uses Go `net/smtp`, which is non-functional in Go WASM on Cloudflare Workers. Pocketflare replaces it with `adapter/mail`, which provides three transport modes:
-
-1. **HTTP provider** (`POCKETFLARE_MAIL_PROVIDER`): resend, postmark, sendgrid, mailgun — talks directly to each provider's HTTP API.
-2. **Generic webhook** (`POCKETFLARE_MAIL_WEBHOOK_URL`): legacy path — posts JSON payloads to any HTTPS endpoint.
-3. **SMTP via Workers sockets**: when neither of the above is set, reads PocketBase admin SMTP settings at send time and delivers through `cloudflare:sockets` (JS module `smtp-transport.mjs`).
-
-Provider selection priority is: `MAIL_PROVIDER` > `MAIL_WEBHOOK_URL` > PocketBase SMTP settings. SMTP sockets have live Amazon SES STARTTLS proof. Other providers can still vary by port, TLS mode, and auth behavior. Port 25 is blocked.
-
-Env vars: `POCKETFLARE_MAIL_PROVIDER`, `POCKETFLARE_MAIL_API_KEY`, `POCKETFLARE_MAIL_DOMAIN` (Mailgun only), plus legacy `POCKETFLARE_MAIL_WEBHOOK_URL` / `POCKETFLARE_MAIL_WEBHOOK_TOKEN`.
+Pocketflare replaces PocketBase's built-in SMTP with Workers-compatible transports. See [Email Implementation](docs/email-implementation.md) for provider details and configuration.

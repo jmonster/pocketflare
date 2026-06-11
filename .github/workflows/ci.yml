@@ -1,0 +1,57 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  patch-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replay patches against upstream PocketBase
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^VERSION="${1:-\([^}]*\)}"/\1/p' scripts/update-pb.sh)
+          git clone --depth 1 --branch "$version" https://github.com/pocketbase/pocketbase.git /tmp/pb
+          cd /tmp/pb
+          for patch in "$GITHUB_WORKSPACE"/patches/*.patch; do
+            echo "  applying $(basename "$patch")"
+            git apply --check "$patch"
+            git apply "$patch"
+          done
+          echo "All $(ls "$GITHUB_WORKSPACE"/patches/*.patch | wc -l | tr -d ' ') patches applied cleanly"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: patch-replay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Materialize patched PocketBase
+        run: ./scripts/update-pb.sh
+      - name: Build
+        run: make build
+
+  deploy-dry-run:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Materialize patched PocketBase
+        run: ./scripts/update-pb.sh
+      - name: Build
+        run: make build
+      - name: Deploy dry-run
+        run: pnpm exec wrangler deploy --dry-run --outdir /tmp/deploy-dry-run

@@ -1,3 +1,7 @@
+# Pocketflare
+
+[![CI](https://github.com/jmonster/pocketflare/actions/workflows/ci.yml/badge.svg)](https://github.com/jmonster/pocketflare/actions/workflows/ci.yml)
+
 ![Pocketflare hero](art/hero-bordered.png)
 
 Pocketflare runs [PocketBase] on Cloudflare Workers and includes:
@@ -77,10 +81,10 @@ pnpm run check:pb-version
 Run the critical local proof lane before calling a change done:
 
 ```sh
-make proof-critical
+make proof
 ```
 
-That runs build, PocketBase version check, fresh patch replay, deploy dry-run, restore, D1 bootstrap, DO SQLite chained views, R2 copy, and cron proofs. Use `pnpm run proof:critical:remote` when you also need deployed-Worker D1 edge fixtures and production realtime proofs.
+That runs build, PocketBase version check, fresh patch replay, deploy dry-run, restore, D1 bootstrap, D1 edge fixtures, DO SQLite chained views, local realtime, R2 copy, and cron proofs. Use `pnpm run proof:critical:remote` when you also need deployed-Worker D1 edge fixtures and production realtime proofs.
 
 ## Admin Setup
 
@@ -138,8 +142,7 @@ binding = "ASSETS"
 POCKETFLARE_DB_MODE = "d1"
 ```
 
-It uses `APP_DB` and `LOGS_DB` D1 bindings. Fixed write transactions are atomic through `D1Database.batch()`. Interactive read-after-write transactions are not available on D1.
-PocketBase migrations run without an outer transaction on D1 because older upstream migrations read their own writes.
+D1 uses batch transactions with specific read/write ordering constraints. See [D1 Compatibility](docs/D1-COMPATIBILITY.md) for the full matrix.
 
 `do_sqlite` is opt-in:
 
@@ -179,11 +182,7 @@ Standard [PocketBase] file uploads and downloads are still mediated by the [Pock
 
 Terminology:
 
-- Upload means a [PocketBase] client posts a file to the [PocketBase] API, then Pocketflare writes it to R2. The current writer is a chunked R2 multipart writer: it buffers up to one part in Go, uploads that part, and releases it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload.
-- Download means [PocketBase] serves `/api/files/...` through the Worker from R2. Signed R2 redirects and public-bucket delivery are not implemented.
-- Copy means [PocketBase]'s filesystem `Copy(src, dst)` method duplicates an existing object. Normal uploads, downloads, and migration imports do not use S3 `CopyObject`.
-
-Copy relays the source object body to a new R2 object through the Worker without holding the whole file in Go memory. The path is runtime-proven up to 20 MiB via `scripts/proof-copy.sh`. Server-side R2 S3 `CopyObject` was tested with scoped credentials and disposable deployed Workers, but Workers rejected `r2.cloudflarestorage.com` fetch URLs before HTTP, so that optimization is disabled.
+File uploads use chunked R2 multipart writes. Copy uses a streaming relay fallback. See [Storage Migration](docs/storage-migration.md) for details on upload, copy, and migration behavior.
 
 ## Backups and Restore
 
@@ -195,7 +194,7 @@ Pocketflare does not build a new backup system. Ongoing backups use Cloudflare-n
 - **DO SQLite:** Durable Object SQLite point-in-time recovery.
 - **R2:** Bucket backup/copy policy for the `STORAGE` bucket.
 
-[PocketBase]'s upstream backup system (create, auto backup, backup S3 settings) is not the ongoing backup strategy for Pocketflare. The `BACKUPS` R2 bucket stores upstream backup zip artifacts when backup creation is enabled, but these are not complete Pocketflare application backups.
+See [Production Backups](docs/production-backups.md) for the complete backup strategy, recovery paths, and support matrix.
 
 ### Restoring from a PocketBase Backup
 
@@ -219,41 +218,7 @@ The CLI script uses the same restore API as the admin UI and prints deterministi
 
 ## Email
 
-Pocketflare replaces [PocketBase]'s Go `net/smtp` transport in the Workers build. Mail delivery can use:
-
-- SMTP through Workers sockets
-- HTTP provider APIs: `resend`, `postmark`, `sendgrid`, or `mailgun`
-- a generic HTTPS webhook
-
-HTTP provider setup:
-
-```sh
-pnpm exec wrangler secret put POCKETFLARE_MAIL_API_KEY
-```
-
-Set non-secret provider defaults in `wrangler.toml`:
-
-```toml
-[vars]
-POCKETFLARE_MAIL_PROVIDER = "resend"
-```
-
-Generic webhook setup:
-
-```sh
-pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_URL
-pnpm exec wrangler secret put POCKETFLARE_MAIL_WEBHOOK_TOKEN
-```
-
-Provider selection priority is `POCKETFLARE_MAIL_PROVIDER`, then `POCKETFLARE_MAIL_WEBHOOK_URL`, then [PocketBase] admin SMTP settings. SMTP over Workers sockets has live proof only with Amazon SES STARTTLS on port 587. Provider behavior can still vary; HTTP providers and webhook delivery remain available for API-based mail.
-
-Amazon SES SMTP credentials use a derived SMTP password, not the raw 40-character AWS secret access key. After creating SES SMTP credentials for the same region as your SMTP endpoint, convert the secret locally:
-
-```sh
-node scripts/ses-smtp-password.mjs '<aws-secret-access-key>' us-east-1
-```
-
-In [PocketBase] SMTP settings, use the `AKIA...` access key ID as the username and the script output as the password. For `email-smtp.us-east-1.amazonaws.com`, use region `us-east-1`.
+Email is delivered through HTTP providers, webhook, or SMTP via Workers sockets. See [Email Implementation](docs/email-implementation.md) for provider configuration.
 
 ## Migrate Existing [PocketBase]
 

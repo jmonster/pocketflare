@@ -1,0 +1,163 @@
+diff --git a/ui/src/base/credits.js b/ui/src/base/credits.js
+index 01fea3f..70b4b5b 100644
+--- a/ui/src/base/credits.js
++++ b/ui/src/base/credits.js
+@@ -28,7 +28,18 @@ window.app.components.credits = function() {
+                             return t.i({ className: link.icon, ariaHidden: true });
+                         }
+                     },
+-                    t.span({ className: "txt" }, () => link.label),
++                    t.span(
++                        { className: "txt" },
++                        () => link.label,
++                        () => {
++                            if (link.labelSuffix) {
++                                return t.span({
++                                    className: link.labelSuffixClass || "",
++                                    textContent: link.labelSuffix,
++                                });
++                            }
++                        },
++                    ),
+                 );
+             });
+         },
+diff --git a/ui/src/css/base.css b/ui/src/css/base.css
+index 1a34df8..c58c5be 100644
+--- a/ui/src/css/base.css
++++ b/ui/src/css/base.css
+@@ -960,6 +960,16 @@ hr {
+         border-color: var(--dangerColor);
+         background: var(--surfaceDangerColor);
+     }
++    &.pocketflare {
++        border-color: #f38020;
++        background: #fff1e6;
++        box-shadow: inset 4px 0 0 #f38020;
++        code,
++        .label,
++        hr {
++            background: rgba(243, 128, 32, 0.14);
++        }
++    }
+ }
+ 
+ .label {
+@@ -1268,6 +1278,11 @@ a.thumb {
+     max-height: 40px;
+ }
+ 
++.pocketflare-version-suffix {
++    color: #f38020;
++    font-weight: bold;
++}
++
+ .dragline {
+     position: relative;
+     z-index: 9;
+diff --git a/ui/src/css/vars.css b/ui/src/css/vars.css
+index 8a5e843..d384466 100644
+--- a/ui/src/css/vars.css
++++ b/ui/src/css/vars.css
+@@ -47,7 +47,7 @@
+     --dangerTxtHintColor: var(--primaryTxtHintColor);
+     --dangerTxtDisabledColor: var(--primaryTxtDisabledColor);
+ 
+-    --accentColor: #1055c9;
++    --accentColor: #404041;
+     --accentAlt1Color: color-mix(in srgb, var(--accentColor), white 10%);
+     --accentAlt2Color: color-mix(in srgb, var(--accentColor), white 15%);
+     --accentTxtColor: #fff;
+diff --git a/ui/src/store.js b/ui/src/store.js
+index bc801cf..b3aba7a 100644
+--- a/ui/src/store.js
++++ b/ui/src/store.js
+@@ -2,6 +2,25 @@ const notifyChannel = new BroadcastChannel("tabsSync");
+ 
+ const SETTINGS_STORAGE_KEY = "pbSettings";
+ const COLOR_SCHEME_STORAGE_KEY = "pbColorScheme";
++const POCKETBASE_DEFAULT_ACCENT_COLOR = "#1055c9";
++const POCKETFLARE_DEFAULT_ACCENT_COLOR = "#404041";
++
++function normalizePocketflareAccentColor(color) {
++    return (color || "").toLowerCase() === POCKETBASE_DEFAULT_ACCENT_COLOR
++        ? POCKETFLARE_DEFAULT_ACCENT_COLOR
++        : color;
++}
++
++function normalizePocketflareSettings(settings = {}) {
++    if (settings.meta?.accentColor) {
++        settings.meta = {
++            ...settings.meta,
++            accentColor: normalizePocketflareAccentColor(settings.meta.accentColor),
++        };
++    }
++
++    return settings;
++}
+ 
+ window.app = window.app || {};
+ window.app.store = store({
+@@ -20,8 +39,8 @@ window.app.store = store({
+         }
+     }),
+ 
+-    mainLogo: import.meta.env.BASE_URL + "images/logo.svg",
+-    headerLogo: import.meta.env.BASE_URL + "images/logo_white.svg",
++    mainLogo: import.meta.env.BASE_URL + "images/logo.png",
++    headerLogo: import.meta.env.BASE_URL + "images/logo.png",
+     favicon: "", // leave empty to fallback to the default one
+ 
+     title: "",
+@@ -52,6 +71,8 @@ window.app.store = store({
+             href: import.meta.env.PB_RELEASES,
+             icon: "ri-github-line",
+             label: `PocketBase ${import.meta.env.PB_VERSION}`,
++            labelSuffix: "f",
++            labelSuffixClass: "pocketflare-version-suffix",
+         },
+     ],
+ 
+@@ -125,7 +146,7 @@ window.app.store = store({
+     },
+ 
+     predefinedAccentColors: [
+-        "#1055c9",
++        POCKETFLARE_DEFAULT_ACCENT_COLOR,
+         "#a3142a",
+         "#096d5c",
+         "#e6620a",
+@@ -133,13 +154,15 @@ window.app.store = store({
+         "#3f3da9",
+     ],
+ 
+-    settings: app.utils.getLocalHistory(SETTINGS_STORAGE_KEY, {}),
++    settings: normalizePocketflareSettings(app.utils.getLocalHistory(SETTINGS_STORAGE_KEY, {})),
+     isLoadingSettings: false,
+     async loadSettings() {
+         app.store.isLoadingSettings = true;
+ 
+         try {
+-            const settings = await app.pb.settings.getAll({ requestKey: "appStore.loadSettings" });
++            const settings = normalizePocketflareSettings(
++                await app.pb.settings.getAll({ requestKey: "appStore.loadSettings" }),
++            );
+ 
+             app.store.settings = settings;
+             app.store.isLoadingSettings = false;
+@@ -267,9 +290,12 @@ watch(() => app.store.settings?.meta?.accentColor, (newColor) => {
+         document.head.appendChild(metaThemeColor);
+     }
+ 
+-    if (newColor) {
+-        metaThemeColor?.setAttribute("content", newColor);
+-        document.documentElement.style.setProperty("--accentColor", newColor);
++    // PocketBase persists its upstream default in settings; map only that default to Pocketflare's brand color.
++    const accentColor = normalizePocketflareAccentColor(newColor);
++
++    if (accentColor) {
++        metaThemeColor?.setAttribute("content", accentColor);
++        document.documentElement.style.setProperty("--accentColor", accentColor);
+     } else {
+         metaThemeColor?.removeAttribute("content");
+         document.documentElement.style.removeProperty("--accentColor");
