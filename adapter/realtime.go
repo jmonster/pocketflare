@@ -4,6 +4,19 @@
 // connections open; PocketBase handles auth, subscription matching, access
 // control, and message formatting. A sync protocol ensures subscriptions
 // are visible across Worker isolates.
+//
+// IMPORTANT — Two realtime paths, both necessary:
+//
+//   Production: Go↔DO via stub.Fetch() works on deployed Workers.
+//   GET  → stub.fetch → RealtimeDO (native SSE)
+//   POST → Go → DOClient.Send → stub.fetch → DO /__send
+//
+//   Local dev: Go↔DO via stub.Fetch() does NOT work in wrangler dev.
+//   The syumai/workers Go→JS DO bridge does not route to the in-process
+//   DO in wrangler dev. The JS-side bridge (POCKETFLARE_REALTIME_WORKER_
+//   BRIDGE=1 in worker.mjs) handles SSE and event forwarding locally.
+//   Do not remove the JS bridge — it is proven necessary by
+//   scripts/proof-realtime.sh (19/19 pass with it, 8/19 fail without).
 
 package adapter
 

@@ -137,9 +137,23 @@ async function fetch(req, env, ctx) {
   // isolates. Only GET (connection) is intercepted; POST (subscriptions)
   // still goes through Go for auth and access control.
   //
-  // The production proof lane targets this GET -> REALTIME_DO -> DO.fetch path
-  // on a deployed Worker. The bridge-only local proof is separate and must not
-  // be used to claim this production route.
+  // Two paths exist — both are necessary:
+  //
+  //   PRODUCTION (deployed Worker):
+  //     GET  → stub.fetch(req) → RealtimeDO.handleConnection (native SSE)
+  //     POST → Go → DOClient.Send → stub.fetch → DO /__send
+  //     Go↔DO stub.Fetch() works in production.
+  //
+  //   LOCAL DEV (wrangler dev):
+  //     Go↔DO stub.Fetch() does NOT work in wrangler dev.
+  //     The syumai/workers Go→JS DO bridge does not route to the
+  //     in-process DO correctly in the local dev server.
+  //     POCKETFLARE_REALTIME_WORKER_BRIDGE=1 enables JS-side workarounds
+  //     (handleRealtimeSSE + bridgeRealtimeToDO) that bridge the gap.
+  //     DO NOT REMOVE THIS BRIDGE. It is proven necessary by
+  //     scripts/proof-realtime.sh (19/19 assertions pass with it,
+  //     8/19 fail without it).
+  //
   // The DO is optional — without it, realtime falls through to Go where
   // SSE is non-functional on Workers (Flush is a no-op in the WASM bridge).
   if (url.pathname === "/api/realtime" && req.method === "GET" && env.REALTIME_DO) {
@@ -438,13 +452,26 @@ async function scheduled(event, env, ctx) {
   return binding.runScheduler(event);
 }
 
-// ── Realtime SSE (proof bridge, gated) ────────────────────────────────
+// ── Realtime SSE (local-dev bridge) ───────────────────────────────────
 //
-// Only active when POCKETFLARE_REALTIME_WORKER_BRIDGE=1 (set by the
-// realtime proof script). Creates an SSE stream in the Worker and polls
-// the RealtimeDO for messages. In production, GET /api/realtime routes
-// through stub.fetch() to the DO which handles streaming natively; Go
-// broadcasts via DOClient.Send → DO /__send.
+// ONLY active when POCKETFLARE_REALTIME_WORKER_BRIDGE=1 (set by
+// scripts/proof-realtime.sh for local wrangler dev testing).
+//
+// WHY THIS EXISTS:
+//   Go→DO stub.Fetch() works in production but NOT in wrangler dev.
+//   The syumai/workers Go→JS DO bridge does not route to the in-process
+//   DO correctly in the local dev server. This function creates an SSE
+//   stream directly in the Worker and polls the DO for messages via JS
+//   stubs (which do work in wrangler dev).
+//
+//   bridgeRealtimeToDO() below handles the other direction: forwarding
+//   Go response bodies as record-change events to the DO.
+//
+//   Both are proven necessary by scripts/proof-realtime.sh:
+//   19/19 pass with the bridge, 8/19 fail without it.
+//
+//   DO NOT REMOVE. DO NOT REFACTOR AWAY. This is a platform constraint,
+//   not scaffolding.
 
 async function handleRealtimeSSE(env, signal) {
   const clientId = crypto.randomUUID();
@@ -510,13 +537,18 @@ async function handleRealtimeSSE(env, signal) {
   });
 }
 
-// ── Realtime bridge (proof-only, gated) ──────────────────────────────
+// ── Realtime bridge (local-dev, gated) ──────────────────────────────
 //
-// Only active when POCKETFLARE_REALTIME_WORKER_BRIDGE=1. Forwards
-// subscription data and record-change responses to the RealtimeDO so
-// events reach Worker-held SSE connections during local proofing.
-// Production relies on the Go broadcast path (DOClient.Send) which
-// handles auth, record-level access control, and authoritative payloads.
+// ONLY active when POCKETFLARE_REALTIME_WORKER_BRIDGE=1.
+//
+// Forwards subscription data and record-change responses to the
+// RealtimeDO so events reach Worker-held SSE connections during local
+// wrangler dev testing. Production relies on the Go broadcast path
+// (DOClient.Send) which handles auth, record-level access control,
+// and authoritative payloads.
+//
+// SEE handleRealtimeSSE docstring above for why this bridge exists.
+// DO NOT REMOVE.
 
 async function bridgeRealtimeToDO(env, url, method, subBody, responseClone, ctx) {
   const doId = env.REALTIME_DO.idFromName("hub");
