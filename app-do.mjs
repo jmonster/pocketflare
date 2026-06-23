@@ -44,10 +44,15 @@ export class AppDO {
         message: e.message,
         stack: e.stack,
       });
-      return new Response("Internal Server Error", {
-        status: 500,
-        headers: { "Content-Type": "text/plain" },
-      });
+      return new Response(
+        JSON.stringify({
+          error: "Internal Server Error",
+          family: "pocketflare-do-init-error",
+          message: e.message,
+          bootId: this.runtimeMetrics?.bootId,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const runtimeWaitDone = performance.now();
@@ -65,10 +70,15 @@ export class AppDO {
       }
     } catch (e) {
       console.error({ message: e.message, stack: e.stack, cause: e.cause });
-      return new Response("Internal Server Error", {
-        status: 500,
-        headers: { "Content-Type": "text/plain" },
-      });
+      return new Response(
+        JSON.stringify({
+          error: "Internal Server Error",
+          family: "pocketflare-do-request-error",
+          message: e.message,
+          bootId: this.runtimeMetrics?.bootId,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const handlerDone = performance.now();
@@ -244,6 +254,11 @@ export class AppDO {
       bootId: metrics.bootId,
     });
     const goPromise = go.run(instance, ctx);
+    const BOOT_TIMEOUT_MS = 30_000;
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("WASM boot timed out after " + BOOT_TIMEOUT_MS + "ms")), BOOT_TIMEOUT_MS);
+    });
+
     await Promise.race([
       readyPromise,
       goPromise.then(
@@ -254,6 +269,7 @@ export class AppDO {
           throw err;
         },
       ),
+      timeoutPromise,
     ]);
     metrics.ready = performance.now();
   }

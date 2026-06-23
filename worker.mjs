@@ -43,6 +43,14 @@ async function run(ctx, metrics) {
   metrics.goRunStart = performance.now();
   console.log({ family: "pocketflare-runtime", phase: "go-run-start", bootId: metrics.bootId });
   const goPromise = go.run(instance, ctx);
+
+  // Timeout: if Go doesn't signal ready within 30s, fail so the next
+  // request retries boot in a fresh context.
+  const BOOT_TIMEOUT_MS = 30_000;
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("WASM boot timed out after " + BOOT_TIMEOUT_MS + "ms")), BOOT_TIMEOUT_MS);
+  });
+
   await Promise.race([
     readyPromise,
     goPromise.then(
@@ -53,6 +61,7 @@ async function run(ctx, metrics) {
         throw err;
       },
     ),
+    timeoutPromise,
   ]);
   metrics.ready = performance.now();
 }
@@ -183,10 +192,14 @@ async function fetch(req, env, ctx) {
       });
     } catch (e) {
       console.error({ message: e.message, stack: e.stack, cause: e.cause });
-      return new Response("Internal Server Error", {
-        status: 500,
-        headers: { "Content-Type": "text/plain" },
-      });
+      return new Response(
+        JSON.stringify({
+          error: "Internal Server Error",
+          family: "pocketflare-do-stub-error",
+          message: e.message,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
     }
   }
 
@@ -260,8 +273,14 @@ async function fetch(req, env, ctx) {
   } catch (e) {
     console.error({ message: e.message, stack: e.stack, cause: e.cause });
     return new Response(
-      'Internal Server Error',
-      { status: 500, headers: { 'Content-Type': 'text/plain' } }
+      JSON.stringify({
+        error: "Internal Server Error",
+        family: "pocketflare-request-error",
+        message: e.message,
+        bootId: runtimeMetrics?.bootId,
+        runtime: runtimeStateForRequest(),
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 }
