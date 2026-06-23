@@ -1,18 +1,37 @@
 //go:build js && wasm
 
-package adapter
+// Package proof registers Pocketflare proof endpoints. All routes are gated
+// behind POCKETFLARE_ENABLE_PROOF_ROUTES=1.
+package proof
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+	"time"
 
+	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/syumai/workers/cloudflare"
 )
+
+// Register adds all Pocketflare proof routes to the router.
+func Register(app core.App, rg *router.RouterGroup[*core.RequestEvent]) {
+	if cloudflare.Getenv("POCKETFLARE_ENABLE_PROOF_ROUTES") != "1" {
+		return
+	}
+
+	registerCopyRoute(app, rg)
+	registerCronRoutes(app, rg)
+}
+
+// ── Copy proof ────────────────────────────────────────────────────────────
 
 const proofCopyMaxSize = 20 * 1024 * 1024 // 20 MiB
 
@@ -35,10 +54,7 @@ type proofCopyResponse struct {
 	Error            string `json:"error,omitempty"`
 }
 
-func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEvent]) {
-	if cloudflare.Getenv("POCKETFLARE_ENABLE_PROOF_ROUTES") != "1" {
-		return
-	}
+func registerCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEvent]) {
 	rg.POST("/proof/copy", func(e *core.RequestEvent) (handlerErr error) {
 		copyPath := "unknown"
 		phase := "start"
@@ -67,7 +83,6 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 			body.ContentType = "application/octet-stream"
 		}
 
-		// Determine which copy path will be used.
 		phase = "select-copy-path"
 		copyPath = "streaming-fallback"
 		fail := func(msg string, err error, srcKey string, dstKey string) error {
@@ -93,40 +108,34 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 		}
 		defer fsys.Close()
 
-		// Generate source content with a recognizable prefix plus random fill.
 		prefix := fmt.Sprintf("proof-copy-src-%s-", randomHex(8))
 		content := make([]byte, body.Size)
 		copy(content, prefix)
-		randFill(content[len(prefix):])
+		fillPrintable(content[len(prefix):])
 
 		suffix := randomHex(6)
 		srcKey := "proof-copy/src-" + suffix
 		dstKey := "proof-copy/dst-" + suffix
 
-		// Clean up regardless of outcome.
 		defer func() {
 			_ = fsys.Delete(srcKey)
 			_ = fsys.Delete(dstKey)
 		}()
 
-		// Upload source object.
 		phase = "upload-source"
 		if err := fsys.Upload(content, srcKey); err != nil {
 			return fail("upload source failed", err, srcKey, dstKey)
 		}
 
-		// Copy src -> dst through the filesystem (triggers R2 Copy path).
 		phase = "copy"
 		if err := fsys.Copy(srcKey, dstKey); err != nil {
 			return fail("copy failed", err, srcKey, dstKey)
 		}
 
-		// Verify source still exists.
 		phase = "source-attributes"
 		srcAttrs, srcErr := fsys.Attributes(srcKey)
 		srcExists := srcErr == nil
 
-		// Verify destination exists and matches.
 		phase = "destination-attributes"
 		dstAttrs, dstErr := fsys.Attributes(dstKey)
 		dstExists := dstErr == nil
@@ -136,7 +145,6 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 			contentTypeMatch = srcAttrs.ContentType == dstAttrs.ContentType
 		}
 
-		// Read back destination bytes and compare with source content.
 		bytesMatch := false
 		if dstExists {
 			phase = "read-destination"
@@ -177,8 +185,104 @@ func registerProofCopyRoute(app core.App, rg *router.RouterGroup[*core.RequestEv
 	}).Bind(apis.RequireSuperuserAuth())
 }
 
-func randFill(b []byte) {
-	// Fill with printable ASCII to keep content-type detection stable.
+// ── Cron proof ────────────────────────────────────────────────────────────
+
+var (
+	scheduledProofFired atomic.Bool
+	scheduledProofJobID string
+)
+
+const scheduledProofJobExpr = "* * * * *"
+
+func registerCronRoutes(app core.App, rg *router.RouterGroup[*core.RequestEvent]) {
+	rg.POST("/proof/cron", func(e *core.RequestEvent) error {
+		pb, ok := app.(*pocketbase.PocketBase)
+		if !ok {
+			return e.InternalServerError("cron proof requires PocketBase app", nil)
+		}
+
+		var fired atomic.Bool
+		jobID := "proof-cron-" + time.Now().UTC().Format("20060102T150405.000")
+
+		pb.Cron().MustAdd(jobID, "* * * * *", func() {
+			fired.Store(true)
+		})
+		defer pb.Cron().Remove(jobID)
+
+		pb.Cron().RunDue(time.Now().UTC())
+		time.Sleep(100 * time.Millisecond)
+
+		return e.JSON(http.StatusOK, map[string]any{
+			"ran":       fired.Load(),
+			"jobsTotal": pb.Cron().Total(),
+		})
+	}).Bind(apis.RequireSuperuserAuth())
+
+	rg.POST("/proof/cron/scheduled", func(e *core.RequestEvent) error {
+		pb, ok := app.(*pocketbase.PocketBase)
+		if !ok {
+			return e.InternalServerError("cron proof requires PocketBase app", nil)
+		}
+
+		if scheduledProofJobID != "" {
+			pb.Cron().Remove(scheduledProofJobID)
+		}
+
+		scheduledProofFired.Store(false)
+		scheduledProofJobID = "proof-cron-scheduled-" + time.Now().UTC().Format("20060102T150405.000")
+
+		pb.Cron().MustAdd(scheduledProofJobID, scheduledProofJobExpr, func() {
+			scheduledProofFired.Store(true)
+		})
+
+		return e.JSON(http.StatusOK, map[string]any{
+			"setup":     true,
+			"jobID":     scheduledProofJobID,
+			"jobsTotal": pb.Cron().Total(),
+		})
+	}).Bind(apis.RequireSuperuserAuth())
+
+	rg.GET("/proof/cron/scheduled", func(e *core.RequestEvent) error {
+		pb, ok := app.(*pocketbase.PocketBase)
+		if !ok {
+			return e.InternalServerError("cron proof requires PocketBase app", nil)
+		}
+
+		return e.JSON(http.StatusOK, map[string]any{
+			"fired":     scheduledProofFired.Load(),
+			"jobID":     scheduledProofJobID,
+			"jobsTotal": pb.Cron().Total(),
+		})
+	}).Bind(apis.RequireSuperuserAuth())
+
+	rg.DELETE("/proof/cron/scheduled", func(e *core.RequestEvent) error {
+		pb, ok := app.(*pocketbase.PocketBase)
+		if !ok {
+			return e.InternalServerError("cron proof requires PocketBase app", nil)
+		}
+
+		if scheduledProofJobID != "" {
+			pb.Cron().Remove(scheduledProofJobID)
+		}
+		scheduledProofJobID = ""
+		scheduledProofFired.Store(false)
+
+		return e.JSON(http.StatusOK, map[string]any{
+			"ok":        true,
+			"jobsTotal": pb.Cron().Total(),
+		})
+	}).Bind(apis.RequireSuperuserAuth())
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+func randomHex(bytes int) string {
+	b := make([]byte, bytes)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func fillPrintable(b []byte) {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	for i := range b {
 		b[i] = alphabet[i%len(alphabet)]

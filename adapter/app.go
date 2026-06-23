@@ -18,6 +18,7 @@ import (
 
 	"github.com/pocketflare/pocketflare/adapter/internal/workerhttp"
 	"github.com/pocketflare/pocketflare/adapter/mail"
+	"github.com/pocketflare/pocketflare/adapter/proof"
 	"github.com/pocketflare/pocketflare/adapter/r2blob"
 	"github.com/pocketflare/pocketflare/adapter/wasmdb"
 )
@@ -129,9 +130,8 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 
 	// Wire Pocketflare-specific routes.
 	registerDoctorRoute(pb, pbRouter.Group("/api/pocketflare"), dbMode)
-	registerProofCopyRoute(pb, pbRouter.Group("/api/pocketflare"))
-	registerProofCronRoute(pb, pbRouter.Group("/api/pocketflare"))
 	registerPocketflareRestoreRoutes(pb, pbRouter.Group("/api"), dbMode)
+	proof.Register(pb, pbRouter.Group("/api/pocketflare"))
 
 	// Wire the Durable Object realtime bridge so SSE works across isolates.
 	initRealtimeDO(pb)
