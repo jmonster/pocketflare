@@ -1,0 +1,87 @@
+diff --git a/core/collection_import.go b/core/collection_import.go
+index 7119cc4..d48a7f6 100644
+--- a/core/collection_import.go
++++ b/core/collection_import.go
+@@ -138,7 +138,12 @@ func (app *BaseApp) ImportCollections(toImport []map[string]any, deleteMissing b
+ 		return res
+ 	})
+ 
+-	return app.RunInTransaction(func(txApp App) error {
++	// Store the merged collection map so that FindCollectionByNameOrId
++	// and findCollectionsByIdentifiers can resolve during the import.
++	app.Store().Set("pocketflareImportCollections", mappedImported)
++	defer app.Store().Set("pocketflareImportCollections", nil)
++
++		return app.RunInTransaction(func(txApp App) error {
+ 		existingCollections := []*Collection{}
+ 		if err := txApp.CollectionQuery().OrderBy("updated ASC").All(&existingCollections); err != nil {
+ 			return err
+diff --git a/core/collection_query.go b/core/collection_query.go
+index e84564a..521e931 100644
+--- a/core/collection_query.go
++++ b/core/collection_query.go
+@@ -60,17 +60,35 @@ func (app *BaseApp) ReloadCachedCollections() error {
+ 
+ // FindCollectionByNameOrId finds a single collection by its name (case insensitive) or id.
+ func (app *BaseApp) FindCollectionByNameOrId(nameOrId string) (*Collection, error) {
++	// During an import the merged collection map is stored so that lookups
++	// resolve from the in-memory map instead of querying the database
++	// (which may not reflect in-progress changes on D1).
++	if m, ok := app.Store().GetOk("pocketflareImportCollections"); ok {
++		if imported, ok := m.(map[string]*Collection); ok {
++			// check by id first
++			if c, exists := imported[nameOrId]; exists {
++				return c, nil
++			}
++			// check by name (case insensitive)
++			for _, c := range imported {
++				if strings.EqualFold(c.Name, nameOrId) {
++					return c, nil
++				}
++			}
++		}
++	}
++
+ 	m := &Collection{}
+ 
+ 	err := app.CollectionQuery().
+ 		AndWhere(dbx.NewExp("[[id]]={:id} OR LOWER([[name]])={:name}", dbx.Params{
+ 			"id":   nameOrId,
+ 			"name": strings.ToLower(nameOrId),
+ 		})).
+ 		Limit(1).
+ 		One(m)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 
+ 	return m, nil
+ }
+diff --git a/core/view.go b/core/view.go
+index 5b44e8b..bfefcc4 100644
+--- a/core/view.go
++++ b/core/view.go
+@@ -498,6 +498,23 @@ func findCollectionsByIdentifiers(app App, tables []identifier) (map[string]*Col
+ 		return nil, nil
+ 	}
+ 
++	// During an import the merged collection map is stored so that lookups
++	// resolve from the in-memory map instead of querying the database.
++	if m, ok := app.Store().GetOk("pocketflareImportCollections"); ok {
++		if imported, ok := m.(map[string]*Collection); ok {
++			result := make(map[string]*Collection, len(names))
++			for _, table := range tables {
++				for _, c := range imported {
++					if c.Name == table.original {
++						result[table.alias] = c
++						break
++					}
++				}
++			}
++			return result, nil
++		}
++	}
++
+ 	result := make(map[string]*Collection, len(names))
+ 	collections := make([]*Collection, 0, len(names))
+ 

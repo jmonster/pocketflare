@@ -1,0 +1,43 @@
+diff --git a/core/collection_model.go b/core/collection_model.go
+index a8fdedc..8793538 100644
+--- a/core/collection_model.go
++++ b/core/collection_model.go
+@@ -884,12 +884,19 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 	var viewFields FieldsList
+ 	var normalizedViewQuery string
+ 	if e.Collection.IsView() {
++		// Use the parent app if we are inside a transaction to avoid
++		// creating temp views within a D1 batch where reads after
++		// writes are not allowed.
++		viewApp := e.App
++		if info := e.App.TxInfo(); info != nil && info.parent != nil {
++			viewApp = info.parent
++		}
+ 		var err error
+-		viewFields, err = e.App.CreateViewFields(e.Collection.ViewQuery)
++		viewFields, err = viewApp.CreateViewFields(e.Collection.ViewQuery)
+ 		if err != nil {
+ 			return err
+ 		}
+-		normalizedViewQuery, err = normalizeViewQueryId(e.App, e.Collection.ViewQuery)
++		normalizedViewQuery, err = normalizeViewQueryId(viewApp, e.Collection.ViewQuery)
+ 		if err != nil {
+ 			return fmt.Errorf("failed to normalize view query id: %w", err)
+ 		}
+diff --git a/core/collection_validate.go b/core/collection_validate.go
+index 5b83bb8..6fc430a 100644
+--- a/core/collection_validate.go
++++ b/core/collection_validate.go
+@@ -75,7 +75,11 @@ func (validator *collectionValidator) run() error {
+ 
+ 	// generate fields from the query (overwriting any explicit user defined fields)
+ 	if validator.new.IsView() {
+-		validator.new.Fields, _ = validator.app.CreateViewFields(validator.new.ViewQuery)
++		viewApp := validator.app
++		if info := validator.app.TxInfo(); info != nil && info.parent != nil {
++			viewApp = info.parent
++		}
++		validator.new.Fields, _ = viewApp.CreateViewFields(validator.new.ViewQuery)
+ 	}
+ 
+ 	// validate base fields

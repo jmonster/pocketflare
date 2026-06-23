@@ -19,7 +19,13 @@
 | `013-active-restore-bootstrap.patch` | 2498 | behavioral-platform | No |
 | `015-restore-feature.patch` | 483004 | admin-ui | No |
 | `016-storage-settings.patch` | 8696 | admin-ui | No |
-| `017-d1-parity-fixes.patch` | 33995 | behavioral-d1 | No |
+| `017a-sql-splitter.patch` | 4643 | behavioral-d1 | No |
+| `017b-skip-system-migrations.patch` | 967 | behavioral-platform | No |
+| `017c-import-view-resolution.patch` | 2974 | behavioral-d1 | No |
+| `017d-view-fields-parent.patch` | 1736 | behavioral-d1 | No |
+| `017e-field-type-prefetch.patch` | 3202 | behavioral-d1 | No |
+| `017f-cascade-delete-bfs.patch` | 7498 | behavioral-d1 | No |
+| `017g-restore-resume-ui.patch` | 12975 | admin-ui | No |
 
 ## Categories
 

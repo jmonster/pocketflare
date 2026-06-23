@@ -1,0 +1,174 @@
+diff --git a/apis/sql.go b/apis/sql.go
+index 1db91f9..24fff13 100644
+--- a/apis/sql.go
++++ b/apis/sql.go
+@@ -111,22 +111,32 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 		result.ExecTime = time.Since(now).Milliseconds()
+ 	}()
+ 
++	// Split multi-statement queries by ";" so each becomes a separate
++	// statement. D1 prepare() accepts only single statements, and mixed
++	// read/write batches cannot be evaluated with the deferred D1 tx model.
++	statements := splitSQLStatements(query)
++	hasReadStatement := false
++	hasWriteStatement := false
++	for _, stmt := range statements {
++		ucStmt := strings.ToUpper(strings.TrimSpace(stmt))
++		if strings.HasPrefix(ucStmt, "SELECT") || strings.HasPrefix(ucStmt, "PRAGMA") {
++			hasReadStatement = true
++			continue
++		}
++		for _, prefix := range knownWriteQueryPrefixes {
++			if strings.HasPrefix(ucStmt, prefix) {
++				hasWriteStatement = true
++				break
++			}
++		}
++	}
++	if hasReadStatement && hasWriteStatement {
++		return nil, errors.New("mixed read/write SQL is not supported in a single request on D1; send read-only queries separately")
++	}
++
+ 	// assume write/mutation query
+ 	// ---------------------------------------------------------------
+ 	if isPossibleWriteQuery {
+-		// Split multi-statement queries by ";" so each becomes a
+-		// separate queued write in the D1 batch transaction.
+-		// D1 prepare() accepts only single statements.
+-		statements := splitSQLStatements(query)
+-
+-		// Reject mixed read+write batches — the driver cannot
+-		// interleave SELECT with queued writes inside a tx.
+-		for _, stmt := range statements {
+-			ucStmt := strings.ToUpper(strings.TrimSpace(stmt))
+-			if strings.HasPrefix(ucStmt, "SELECT") || strings.HasPrefix(ucStmt, "PRAGMA") {
+-				return nil, errors.New("mixed read/write SQL is not supported in a single request on D1; send read-only queries separately")
+-			}
+-		}
+ 
+ 		txErr := app.RunInTransaction(func(txApp core.App) error {
+ 			var totalAffected int64
+@@ -207,16 +207,115 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 	return result, nil
+ }
+ 
+-// splitSQLStatements splits a SQL string on ";" delimiters,
+-// skipping empty segments and trimming whitespace.
++// splitSQLStatements splits a SQL string on ";" delimiters using a
++// rune-based state machine that respects string literals, blob literals,
++// and comments so that semicolons inside those constructs are not treated
++// as statement boundaries.
+ func splitSQLStatements(query string) []string {
+-	parts := strings.Split(query, ";")
+-	out := make([]string, 0, len(parts))
+-	for _, p := range parts {
+-		p = strings.TrimSpace(p)
+-		if p != "" {
+-			out = append(out, p)
++	var out []string
++	runes := []rune(query)
++	var buf strings.Builder
++	n := len(runes)
++
++	const (
++		sNormal = iota
++		sSingleQuote
++		sDoubleQuote
++		sBlob
++		sLineComment
++		sBlockComment
++	)
++
++	st := sNormal
++
++	for i := 0; i < n; i++ {
++		ch := runes[i]
++
++		switch st {
++		case sNormal:
++			switch {
++			case ch == '\'':
++				st = sSingleQuote
++				buf.WriteRune(ch)
++			case ch == '"':
++				st = sDoubleQuote
++				buf.WriteRune(ch)
++			case (ch == 'X' || ch == 'x') && i+1 < n && runes[i+1] == '\'':
++				buf.WriteRune(ch)
++				buf.WriteRune(runes[i+1])
++				i++
++				st = sBlob
++			case ch == '-' && i+1 < n && runes[i+1] == '-':
++				buf.WriteString("--")
++				i++
++				st = sLineComment
++			case ch == '/' && i+1 < n && runes[i+1] == '*':
++				buf.WriteString("/*")
++				i++
++				st = sBlockComment
++			case ch == ';':
++				s := strings.TrimSpace(buf.String())
++				if s != "" {
++					out = append(out, s)
++				}
++				buf.Reset()
++			default:
++				buf.WriteRune(ch)
++			}
++
++		case sSingleQuote:
++			buf.WriteRune(ch)
++			if ch == '\'' {
++				if i+1 < n && runes[i+1] == '\'' {
++					i++
++					buf.WriteRune(runes[i])
++				} else {
++					st = sNormal
++				}
++			}
++
++		case sDoubleQuote:
++			buf.WriteRune(ch)
++			if ch == '"' {
++				if i+1 < n && runes[i+1] == '"' {
++					i++
++					buf.WriteRune(runes[i])
++				} else {
++					st = sNormal
++				}
++			}
++
++		case sBlob:
++			buf.WriteRune(ch)
++			if ch == '\'' {
++				if i+1 < n && runes[i+1] == '\'' {
++					i++
++					buf.WriteRune(runes[i])
++				} else {
++					st = sNormal
++				}
++			}
++
++		case sLineComment:
++			buf.WriteRune(ch)
++			if ch == '\n' {
++				st = sNormal
++			}
++
++		case sBlockComment:
++			buf.WriteRune(ch)
++			if ch == '*' && i+1 < n && runes[i+1] == '/' {
++				i++
++				buf.WriteRune('/')
++				st = sNormal
++			}
+ 		}
+ 	}
++
++	// Last statement
++	if s := strings.TrimSpace(buf.String()); s != "" {
++		out = append(out, s)
++	}
++
+ 	return out
+ }

@@ -1,0 +1,293 @@
+diff --git a/ui/src/settings/backups/pocketflareRestore.js b/ui/src/settings/backups/pocketflareRestore.js
+index bbf9936..79a9c88 100644
+--- a/ui/src/settings/backups/pocketflareRestore.js
++++ b/ui/src/settings/backups/pocketflareRestore.js
+@@ -5,6 +5,23 @@
+ const D1_MAX_BOUND_PARAMS = 100;
+ const FILE_UPLOAD_CONCURRENCY = 3;
+ 
++function detectMime(e) {
++    var n = (e || "").split(".").pop()?.toLowerCase();
++    return {
++        jpg: "image/jpeg",
++        jpeg: "image/jpeg",
++        png: "image/png",
++        gif: "image/gif",
++        webp: "image/webp",
++        svg: "image/svg+xml",
++        pdf: "application/pdf",
++        json: "application/json",
++        html: "text/html",
++        css: "text/css",
++        js: "text/javascript",
++    }[n] || "application/octet-stream";
++}
++
+ export function pocketflareRestorePage() {
+     const data = store({
+         phase: "idle",
+@@ -13,6 +30,7 @@ export function pocketflareRestorePage() {
+         activeRestore: null,
+         progress: { done: 0, total: 0 },
+         error: null,
++        cancelError: null,
+         sessionId: null,
+         fileUploadToken: null,
+         statusMsg: "",
+@@ -36,6 +54,9 @@ export function pocketflareRestorePage() {
+             if (resp.activeRestore) {
+                 data.activeRestore = resp.activeRestore;
+                 data.fileUploadToken = resp.activeRestore.fileUploadToken;
++                data.sessionId = resp.activeRestore.sessionId;
++                data.phase = "resume";
++                return;
+             }
+             if (resp.empty) {
+                 data.phase = "ready";
+@@ -45,6 +66,29 @@ export function pocketflareRestorePage() {
+             }
+         } catch (err) {
+             if (!err.isAbort) {
++                const t = sessionStorage.getItem("pocketflareRestoreToken");
++                if (t) {
++                    try {
++                        const resp = await fetch(app.pb.buildURL("/api/pocketflare/restore/session"), {
++                            headers: { "X-Pocketflare-Restore-Token": t },
++                        });
++                        if (resp.ok) {
++                            const body = await resp.json();
++                            data.activeRestore = {
++                                sessionId: body.sessionId,
++                                phase: body.phase,
++                                startedAt: body.startedAt,
++                                dbProgress: body.dbProgress,
++                                fileProgress: body.fileProgress,
++                                fileUploadToken: body.fileUploadToken,
++                            };
++                            data.fileUploadToken = body.fileUploadToken;
++                            data.sessionId = body.sessionId;
++                            data.phase = "resume";
++                            return;
++                        }
++                    } catch (_) { /* fall through to error */ }
++                }
+                 data.error = err.response?.message || err.message || "Failed to check restore status";
+                 data.phase = "error";
+             }
+@@ -96,6 +140,8 @@ export function pocketflareRestorePage() {
+             fileUploadToken = resp.fileUploadToken;
+             data.sessionId = sessionId;
+             data.fileUploadToken = fileUploadToken;
++            sessionStorage.setItem("pocketflareRestoreToken", fileUploadToken);
++            sessionStorage.setItem("pocketflareRestoreSessionId", sessionId);
+         } catch (err) {
+             if (!err.isAbort) {
+                 const info = err.response || {};
+@@ -174,6 +220,133 @@ export function pocketflareRestorePage() {
+ 
+         data.phase = "complete";
+         data.statusMsg = "Restore complete. You may need to log in with restored superuser credentials.";
++        sessionStorage.removeItem("pocketflareRestoreToken");
++        sessionStorage.removeItem("pocketflareRestoreSessionId");
++    }
++
++    async function resumeRestore(file) {
++        if (!file || !file.name.endsWith(".zip")) {
++            data.error = "Please select a .zip backup file.";
++            data.phase = "error";
++            return;
++        }
++        data.phase = "reading";
++        data.statusMsg = "Reading backup zip for resume...";
++        let zip, sqlJS;
++        try {
++            const [JSZip, sqljsModule] = await Promise.all([import("jszip"), import("sql.js")]);
++            zip = await JSZip.default.loadAsync(file);
++            sqlJS = await sqljsModule.default({
++                locateFile: (f) => import.meta.env.BASE_URL + "assets/" + f,
++            });
++        } catch (err) {
++            data.error = "Failed to read backup zip: " + (err.message || err);
++            data.phase = "error";
++            return;
++        }
++        const dataDbEntry = zip.file("data.db");
++        if (!dataDbEntry) {
++            data.error = "Backup zip does not contain data.db.";
++            data.phase = "error";
++            return;
++        }
++        const auxDbEntry = zip.file("auxiliary.db");
++        const storageEntries = zip.file(/^storage\//);
++        const sid = data.sessionId || data.activeRestore?.sessionId || "";
++        const phase = data.activeRestore?.phase || "db";
++        if (phase !== "files") {
++            data.statusMsg = "Resuming database import...";
++            try {
++                await importDatabase(sqlJS, dataDbEntry, auxDbEntry, sid, (msg, done, total) => {
++                    data.statusMsg = msg;
++                    if (total > 0) {
++                        data.progress = { done, total };
++                        data.phase = "importing";
++                    }
++                });
++            } catch (err) {
++                data.error = "Database import failed: " + (err.message || err);
++                data.phase = "error";
++                return;
++            }
++            try {
++                await app.pb.send("/api/pocketflare/restore/phase", {
++                    method: "POST",
++                    body: JSON.stringify({ sessionId: sid, phase: "files" }),
++                    headers: restoreHeaders(),
++                });
++            } catch (err) {
++                if (!err.isAbort) {
++                    data.error = "Failed to transition to files phase: " + (err.response?.message || err.message || "");
++                    data.phase = "error";
++                    return;
++                }
++            }
++        }
++        if (storageEntries.length > 0) {
++            data.phase = "uploading";
++            data.totalFiles = storageEntries.length;
++            data.uploadedFiles = 0;
++            try {
++                await uploadStorageFiles(storageEntries, data.fileUploadToken, (done, total) => {
++                    data.uploadedFiles = done;
++                    data.totalFiles = total;
++                });
++            } catch (err) {
++                data.error = "File upload failed: " + (err.message || err);
++                data.phase = "error";
++                return;
++            }
++        }
++        data.phase = "finalizing";
++        data.statusMsg = "Finalizing restore...";
++        try {
++            await app.pb.send("/api/pocketflare/restore/finalize", {
++                method: "POST",
++                body: JSON.stringify({ sessionId: sid }),
++                headers: restoreHeaders(),
++            });
++        } catch (err) {
++            if (!err.isAbort) {
++                data.error = "Finalize failed: " + (err.response?.message || err.message || "");
++                data.phase = "error";
++                return;
++            }
++        }
++        data.phase = "complete";
++        data.statusMsg = "Restore complete. You may need to log in with restored superuser credentials.";
++        sessionStorage.removeItem("pocketflareRestoreToken");
++        sessionStorage.removeItem("pocketflareRestoreSessionId");
++    }
++
++    async function startOver() {
++        data.cancelError = null;
++        try {
++            const sid = data.sessionId || data.activeRestore?.sessionId || "";
++            const tok = data.fileUploadToken || sessionStorage.getItem("pocketflareRestoreToken") || "";
++            await app.pb.send("/api/pocketflare/restore/cancel", {
++                method: "POST",
++                body: JSON.stringify({ sessionId: sid }),
++                headers: tok
++                    ? { "X-Pocketflare-Restore-Token": tok, "Content-Type": "application/json" }
++                    : { "Content-Type": "application/json" },
++            });
++        } catch (err) {
++            if (!err.isAbort) {
++                data.cancelError =
++                    "Restore cannot be canceled after database import has started. Continue the restore, or start with a fresh Pocketflare target.";
++            }
++            return;
++        }
++        data.activeRestore = null;
++        data.sessionId = null;
++        data.fileUploadToken = null;
++        data.progress = { done: 0, total: 0 };
++        data.statusMsg = "";
++        data.error = null;
++        sessionStorage.removeItem("pocketflareRestoreToken");
++        sessionStorage.removeItem("pocketflareRestoreSessionId");
++        await checkStatus();
+     }
+ 
+     async function importDatabase(sqlJS, dataDbEntry, auxDbEntry, sessionId, onProgress) {
+@@ -349,7 +522,8 @@ export function pocketflareRestorePage() {
+         async function uploadOne(entry) {
+             const blob = await entry.async("blob");
+             const headers = { "X-Pocketflare-File-Key": entry.name, "X-Pocketflare-Restore-Token": fileUploadToken };
+-            if (blob.type) headers["X-Pocketflare-File-Content-Type"] = blob.type;
++            headers["X-Pocketflare-File-Content-Type"] = detectMime(entry.name) || blob.type
++                || "application/octet-stream";
+             const resp = await fetch("/api/pocketflare/restore/files", { method: "PUT", headers, body: blob });
+             if (!resp.ok) {
+                 const err = await resp.json().catch(() => ({}));
+@@ -371,6 +545,8 @@ export function pocketflareRestorePage() {
+         data,
+         handleFile,
+         checkStatus,
++        resumeRestore,
++        startOver,
+         render: function() {
+             return t.div(
+                 { className: "block" },
+@@ -486,3 +662,54 @@ export function pocketflareRestorePage() {
+                             t.button({
+                                 type: "button",
+                                 className: "btn secondary m-t-sm",
++                                onclick: () => checkStatus(),
++                                textContent: "Try again",
++                            }),
++                        )
++                        : null,
++                () =>
++                    data.phase === "resume"
++                        ? t.div(
++                            { "html-data-test": "restore-active-session" },
++                            t.p({ className: "m-b-sm txt-bold" }, "Active restore session detected"),
++                            t.p(
++                                { className: "m-b-sm" },
++                                "Session: " + (data.activeRestore?.sessionId || data.sessionId || ""),
++                            ),
++                            t.p(
++                                { className: "m-b-sm" },
++                                "Phase: " + (data.activeRestore?.phase || ""),
++                            ),
++                            t.p(
++                                { className: "m-b-sm" },
++                                "Started: " + (data.activeRestore?.startedAt || ""),
++                            ),
++                            () =>
++                                data.cancelError
++                                    ? t.div(
++                                        { "html-data-test": "restore-cancel-error", className: "alert danger m-b-sm" },
++                                        t.p(null, data.cancelError),
++                                    )
++                                    : null,
++                            t.input({
++                                type: "file",
++                                accept: ".zip",
++                                className: "m-b-sm",
++                                onchange: (e) => {
++                                    const f = e.target?.files?.[0];
++                                    if (f) resumeRestore(f);
++                                },
++                            }),
++                            t.button({
++                                type: "button",
++                                "html-data-test": "restore-start-over",
++                                className: "btn secondary m-t-sm",
++                                onclick: () => startOver(),
++                                textContent: "Start Over",
++                            }),
++                        )
++                        : null,
++            );
++        },
++    };
++}
