@@ -180,7 +180,7 @@ binding = "BACKUPS"
 bucket_name = "$(toml_escape "$backups_bucket")"
 
 [assets]
-directory = "./admin-ui"
+directory = "./dist/admin-ui"
 binding = "ASSETS"
 EOF
 

@@ -12,7 +12,7 @@ Pocketflare runs [PocketBase] on Cloudflare Workers and includes:
 - the familiar [PocketBase] Admin dashboard UI, served through Workers Assets
 - the simple REST-ish [PocketBase] API, running as Go WASM on Cloudflare Workers
 
-Pocketflare is a thin [PocketBase] port for Cloudflare, structured to keep upstream updates easy to pull.
+Pocketflare is a [PocketBase] port for Cloudflare. It targets **PocketBase v0.40.2** with three focused [upstream patches](patches/MANIFEST.md); the admin UI uses PocketBase's existing extension loader.
 
 ## Compatibility Model
 
@@ -61,7 +61,7 @@ http://localhost:8787/_pf
 
 `/_pf` is Pocketflare's first-run setup route. If the local database has no superuser, it redirects to [PocketBase]'s tokenized first-access installer. After creating the superuser, use `http://localhost:8787/_/` for the admin UI. Local D1/R2 data is separate from Cloudflare remote resources.
 
-After changing Go, `worker.mjs`, `runtime.mjs`, `realtime-do.mjs`, or `smtp-transport.mjs`, stop Wrangler, run `make build`, then run `make dev` again. Admin UI changes require rebuilding `admin-ui/_` before `make build`.
+After changing Go, `worker.mjs`, `runtime.mjs`, `realtime-do.mjs`, or `smtp-transport.mjs`, stop Wrangler, run `make build`, then run `make dev` again. `make build` also builds the pinned upstream admin UI and the Pocketflare extensions in `ui/`; generated assets stay in `dist/admin-ui/_`.
 
 To test against real Cloudflare D1/R2 bindings instead of local Miniflare state:
 
@@ -84,7 +84,7 @@ Run the critical local proof lane before calling a change done:
 make proof
 ```
 
-That runs build, PocketBase version check, fresh patch replay, deploy dry-run, restore, D1 bootstrap, D1 edge fixtures, DO SQLite chained views, local realtime, R2 copy, and cron proofs. Use `pnpm run proof:critical:remote` when you also need deployed-Worker D1 edge fixtures and production realtime proofs.
+That runs build, PocketBase version check, fresh patch replay and source comparison, adapter and restore-schema regressions, deploy dry-run, restore, D1 bootstrap, D1 edge fixtures, DO SQLite chained views, local realtime, R2 copy, and cron proofs. Use `pnpm run proof:critical:remote` when you also need deployed-Worker D1 edge fixtures and production realtime proofs.
 
 ## Admin Setup
 
@@ -108,7 +108,7 @@ Pocketflare runs [PocketBase] as Go WASM inside a Cloudflare Worker.
 | Logs database | D1 `LOGS_DB` by default, or `APP_DO` in DO SQLite mode | [PocketBase] logs and auxiliary data. |
 | File storage | R2 `STORAGE` | Uploaded files for [PocketBase] file fields. |
 | Backup artifacts | R2 `BACKUPS` | Stores upstream backup zip artifacts when enabled. |
-| Admin UI assets | Workers Assets `ASSETS` | Serves `admin-ui/_` without booting Go WASM. |
+| Admin UI assets | Workers Assets `ASSETS` | Serves `dist/admin-ui/_` without booting Go WASM. |
 | Realtime | Optional Durable Object | SSE/WebSocket bridge for [PocketBase] realtime. |
 
 D1 mode bindings in `wrangler.toml`:
@@ -127,11 +127,11 @@ binding = "STORAGE"
 binding = "BACKUPS"
 
 [assets]
-directory = "./admin-ui"
+directory = "./dist/admin-ui"
 binding = "ASSETS"
 ```
 
-`STORAGE`, `BACKUPS`, and `ASSETS` are used in both database modes. `ASSETS` is Cloudflare Workers Assets, not R2. It serves `admin-ui/_` without booting Go WASM. `/_pf` is the first-superuser setup route; `/_` and nested admin assets stay on Workers Assets.
+`STORAGE`, `BACKUPS`, and `ASSETS` are used in both database modes. `ASSETS` is Cloudflare Workers Assets, not R2. It serves `dist/admin-ui/_` without booting Go WASM. `/_pf` is the first-superuser setup route; `/_` and nested admin assets stay on Workers Assets.
 
 ## Database Modes
 
@@ -305,7 +305,6 @@ For a small baseline [PocketBase] app with no realtime and less than 10 GB of fi
 |---|---|---|
 | D1 transactions | Fixed write batches are atomic. Interactive read-after-write transactions are not available on D1. | Use D1 for the cheapest/default path; use DO SQLite when upstream SQLite transaction semantics matter. |
 | D1 migrations | Run statement-by-statement because older PocketBase migrations read their own writes. | Retry failed migrations on a fresh target, or use DO SQLite when rollback semantics matter. |
-| DO SQLite import API | `PUT /api/collections/import` hangs in DO SQLite mode. Chained views work when created individually. | Create views with individual `POST /api/collections`, or use D1 for collection-import workflows. |
 | Batch API | Uses PocketBase's upstream `/api/batch`; D1 compatibility depends on whether the batch queues reads after writes. | Avoid read-after-write batches in D1 mode. |
 | File transfer | Uploads/downloads pass through the Worker. Copy uses the Worker relay fallback, proven to 20 MiB. | Direct browser-to-R2 uploads and signed R2 redirects are app-level optimizations, not built in. |
 | Realtime | Requires the optional Durable Object binding. | Enable `REALTIME_DO` when realtime is needed. |

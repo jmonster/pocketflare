@@ -11,7 +11,7 @@ Browser
   ├─ /_pf first-run admin setup
   │    └─ worker.mjs redirects empty databases to PocketBase's installer
   ├─ /_/* static admin files
-  │    └─ Cloudflare Workers Assets binding: ASSETS -> admin-ui/_
+  │    └─ Cloudflare Workers Assets binding: ASSETS -> dist/admin-ui/_
   ├─ /api/realtime (GET)
   │    └─ worker.mjs routes to Durable Object (RealtimeDO)
   │         ├─ SSE stream (TransformStream)
@@ -30,7 +30,7 @@ Browser
 
 `worker.mjs` keeps one Go runtime per isolate. Creating one Go WASM runtime per request can exceed the Worker memory limit.
 
-Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, not by PocketBase. `/_pf` is Pocketflare's first-run setup route; it boots the runtime only to redirect empty databases to the tokenized first-superuser installer. `/_` and nested admin static assets remain asset-first.
+Admin UI files are built from the pinned PocketBase source into `dist/admin-ui/_` and served by Workers Assets, not by PocketBase. `/_pf` is Pocketflare's first-run setup route; it boots the runtime only to redirect empty databases to the tokenized first-superuser installer. `/_` and nested admin static assets remain asset-first.
 
 ## Project Layout
 
@@ -40,12 +40,14 @@ Admin UI files are checked in under `admin-ui/_` and served by Workers Assets, n
 | `adapter/app.go` | Creates PocketBase, wires D1/R2, applies new-install defaults, runs migrations, builds router. |
 | `adapter/wasmdb/` | D1 `database/sql` driver wrapper and DB binding routing. |
 | `adapter/r2blob/` | `blob.Driver` implementation backed by Cloudflare R2 bindings. |
-| `admin-ui/_/` | PocketBase admin UI static assets served by Workers Assets. |
+| `dist/admin-ui/_/` | PocketBase admin UI static assets served by Workers Assets. |
 | `worker.mjs` | Worker fetch/scheduled handlers, singleton WASM runtime management, and realtime DO routing. |
 | `realtime-do.mjs` | Durable Object class that holds SSE connections open and delivers messages from Go to clients. |
 | `runtime.mjs` | WASM module loader and Workers runtime context bridge. |
 | `adapter/realtime.go` | DO-based realtime bridge: `DOClient` wraps PocketBase's `DefaultClient` so subscription matching stays in Go while message delivery goes through the DO. |
-| `patches/` | Patch set applied to upstream PocketBase by `scripts/update-pb.sh`. |
+| `patches/` | Three patches applied to upstream PocketBase by `scripts/update-pb.sh`. |
+| `ui/` | Pocketflare dashboard extensions; upstream UI source stays unchanged. |
+| `runtime/wasm_exec.patch` | Per-instance context bridge applied to the active Go compiler runtime during `make build`. |
 | `scripts/scaffold-project.sh` | Prompts and creates a new Pocketflare project. |
 | `scripts/migrate-data.sh` | Exports PocketBase SQLite `data.db` to SQL for D1 import. |
 | `scripts/migrate-files.sh` | Uploads `pb_data/storage` files to the R2 `STORAGE` bucket. |
@@ -63,7 +65,7 @@ Required bindings:
 - `LOGS_DB`: D1 database for PocketBase auxiliary/log data.
 - `STORAGE`: R2 bucket for PocketBase file fields.
 - `BACKUPS`: R2 bucket for upstream PocketBase backup zip artifacts, not complete Pocketflare data backups.
-- `ASSETS`: Workers Assets binding for `admin-ui/`.
+- `ASSETS`: Workers Assets binding for `dist/admin-ui/`.
 - `REALTIME_DO`: (optional) Durable Object for SSE connections. Uncomment in `wrangler.toml` to enable; adds ~$4/mo for a single always-warm DO instance.
 
 A per-minute Workers Cron Trigger (`[triggers] crons = ["* * * * *"]`) drives PocketBase's cron scheduler.
@@ -177,7 +179,7 @@ File storage uses R2 via the Worker. See [Storage Migration](docs/storage-migrat
 
 Pocketflare patches upstream PocketBase to add narrow extension points. Each patch follows a consistent pattern:
 
-- **Patches add hooks** -- function pointers (`RunInTransactionHook`, `WasmRealtimeClientProvider`), exported methods (`SetId`, `RunDue`), config flags (`SkipSystemMigrations`, `RunMigrationsWithoutTransaction`), and build-tagged files. They are minimal by design: the smallest possible change that exposes an integration point.
+- **Patches add hooks** -- function pointers (`RunInTransactionHook`, `WasmRealtimeClientProvider`), exported methods (`RunDue`), config flags (`SkipSystemMigrations`, `D1BatchMode`), and build-tagged files. They are minimal by design: the smallest possible change that exposes an integration point.
 - **Adapter provides implementations** -- `adapter/` sets those hooks at startup with Workers-specific behavior (D1 driver, R2 filesystem, DO SQLite transactions, DO realtime bridge).
 
 When adding new behavior, prefer `adapter/`, `worker.mjs`, or configuration over patching PocketBase source. Patches should only exist where upstream PocketBase has to expose a hook or avoid unsupported WASM behavior.
@@ -188,7 +190,6 @@ When adding new behavior, prefer `adapter/`, `worker.mjs`, or configuration over
 |---|---|---|
 | D1 transactions | Uses batch transactions. See [D1 Compatibility](docs/D1-COMPATIBILITY.md) for the full matrix. | |
 | D1 migrations | Run statement-by-statement, not in one outer transaction. | `docs/D1-COMPATIBILITY.md` |
-| DO SQLite import | `PUT /api/collections/import` hangs; creating views individually works. | `scripts/proof-do-sqlite-view-chained.sh` |
 | File transfer | Uploads/downloads pass through the Worker. Direct browser-to-R2 and signed R2 redirects are not built in. | `docs/storage-migration.md` |
 | R2 Copy | Worker relay fallback is proven to 20 MiB; server-side S3 `CopyObject` is disabled. | `scripts/proof-copy.sh` |
 | Realtime | Requires the optional `REALTIME_DO` binding. | `scripts/proof-realtime-production.sh` |

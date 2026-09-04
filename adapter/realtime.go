@@ -88,15 +88,15 @@ func bindBroadcastSync(app core.App) {
 	}
 
 	app.OnModelAfterCreateSuccess().Bind(&hook.Handler[*core.ModelEvent]{
-		Func:    func(e *core.ModelEvent) error { sync(); return e.Next() },
+		Func:     func(e *core.ModelEvent) error { sync(); return e.Next() },
 		Priority: -98,
 	})
 	app.OnModelAfterUpdateSuccess().Bind(&hook.Handler[*core.ModelEvent]{
-		Func:    func(e *core.ModelEvent) error { sync(); return e.Next() },
+		Func:     func(e *core.ModelEvent) error { sync(); return e.Next() },
 		Priority: -98,
 	})
 	app.OnModelAfterDeleteSuccess().Bind(&hook.Handler[*core.ModelEvent]{
-		Func:    func(e *core.ModelEvent) error { sync(); return e.Next() },
+		Func:     func(e *core.ModelEvent) error { sync(); return e.Next() },
 		Priority: -98,
 	})
 }
@@ -194,13 +194,15 @@ func syncSubscriptionsFromDO(app core.App) {
 // and context storage is inherited from DefaultClient unchanged.
 type DOClient struct {
 	*subscriptions.DefaultClient
+	id string
 }
 
 func newDOClient(clientId string) *DOClient {
-	dc := subscriptions.NewDefaultClient()
-	dc.SetId(clientId)
-	return &DOClient{DefaultClient: dc}
+	return &DOClient{DefaultClient: subscriptions.NewDefaultClient(), id: clientId}
 }
+
+// Id uses the identifier assigned by the external connection manager.
+func (c *DOClient) Id() string { return c.id }
 
 // Channel returns nil — DO-based clients don't use in-memory channels.
 // This channel is only consumed by the SSE handler (realtimeConnect),

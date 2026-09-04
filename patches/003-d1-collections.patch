@@ -1,0 +1,562 @@
+diff --git a/core/collection_d1.go b/core/collection_d1.go
+new file mode 100644
+index 0000000..2675835
+--- /dev/null
++++ b/core/collection_d1.go
+@@ -0,0 +1,130 @@
++package core
++
++import (
++	"errors"
++	"fmt"
++	"sort"
++	"strings"
++
++	"github.com/pocketbase/pocketbase/tools/security"
++)
++
++func checkD1ViewDependencies(app App, collection *Collection) error {
++	if !D1BatchMode {
++		return nil
++	}
++	views, err := app.FindAllCollections(CollectionTypeView)
++	if err != nil {
++		return err
++	}
++	for _, view := range views {
++		if view.Id == collection.Id {
++			continue
++		}
++		parsed := new(identifiersParser)
++		if err := parsed.parse(view.ViewQuery); err != nil {
++			return err
++		}
++		for _, table := range parsed.tables {
++			if strings.EqualFold(table.original, collection.Name) {
++				return fmt.Errorf("[%s] failed to delete due to existing view dependency (%s)", collection.Name, view.Name)
++			}
++		}
++	}
++	return nil
++}
++
++// D1 introspection must run before a queued schema write. SQLite introspection
++// stays on its active transaction so uncommitted schema changes remain visible.
++func d1ReadApp(app App) App {
++	if D1BatchMode {
++		for app.TxInfo() != nil && app.TxInfo().parent != nil {
++			app = app.TxInfo().parent
++		}
++	}
++	return app
++}
++
++// Schema introspection cannot acquire a second write transaction while a D1
++// import holds the nonconcurrent connection. Native SQLite keeps its transaction.
++func runViewRead(app App, fn func(App) error) error {
++	if D1BatchMode {
++		return fn(d1ReadApp(app))
++	}
++	return app.RunInTransaction(fn)
++}
++
++func d1QueryTableInfo(app App, query string) (info []*TableInfoRow, err error) {
++	app = d1ReadApp(app)
++	query, err = normalizeViewSelectQuery(query)
++	if err != nil {
++		return nil, err
++	}
++
++	query, err = d1ViewQuery(app, query)
++	if err != nil {
++		return nil, err
++	}
++
++	// D1 HTTP requests have no session-scoped TEMP tables. Use a unique view,
++	// inspect it on the independent connection, then remove it on every path.
++	name := "_temp_" + security.PseudorandomString(12)
++	db := app.ConcurrentDB()
++	if _, err = db.NewQuery("CREATE VIEW {{" + name + "}} AS SELECT * FROM (" + query + ")").Execute(); err != nil {
++		return nil, err
++	}
++	defer func() {
++		_, cleanupErr := db.NewQuery("DROP VIEW IF EXISTS {{" + name + "}}").Execute()
++		err = errors.Join(err, cleanupErr)
++	}()
++	return app.TableInfo(name)
++}
++
++func d1ViewQuery(app App, query string) (string, error) {
++	var err error
++
++	// During import, CTEs describe the proposed schema, including views that
++	// depend on other views whose CREATE statements have not committed yet.
++	if imported, ok := app.Store().Get("pocketflareImportCollections").(map[string]*Collection); ok {
++		quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
++		definitions := make([]string, 0, len(imported))
++		for _, collection := range imported {
++			selectQuery := collection.ViewQuery
++			if collection.IsView() {
++				selectQuery, err = normalizeViewSelectQuery(selectQuery)
++				if err != nil {
++					return "", err
++				}
++			} else {
++				columns := make([]string, 0, len(collection.Fields))
++				original, _ := app.FindCachedCollectionByNameOrId(collection.Id)
++				for _, field := range collection.Fields {
++					columnType := strings.Fields(field.ColumnType(app))
++					if len(columnType) == 0 {
++						continue
++					}
++					value := "CAST(NULL AS " + columnType[0] + ")"
++					if original != nil && !original.IsView() {
++						if oldField := original.Fields.GetById(field.GetId()); oldField != nil {
++							value = quote(oldField.GetName())
++						}
++					}
++					columns = append(columns, value+" AS "+quote(field.GetName()))
++				}
++				selectQuery = "SELECT " + strings.Join(columns, ",")
++				if original != nil && !original.IsView() {
++					selectQuery += " FROM main." + quote(original.Name)
++				} else {
++					selectQuery += " WHERE 0"
++				}
++			}
++			definitions = append(definitions, quote(collection.Name)+" AS ("+selectQuery+")")
++		}
++		sort.Strings(definitions)
++		if len(definitions) > 0 {
++			query = "WITH " + strings.Join(definitions, ",") + " SELECT * FROM (" + query + ")"
++		}
++	}
++
++	return query, nil
++}
+diff --git a/core/collection_import.go b/core/collection_import.go
+index e169a55..fcfd1fd 100644
+--- a/core/collection_import.go
++++ b/core/collection_import.go
+@@ -139,6 +139,13 @@ func (app *BaseApp) ImportCollections(toImport []map[string]any, deleteMissing b
+ 		return res
+ 	})
+ 
++	// Store the merged collection map so that FindCollectionByNameOrId
++	// and findCollectionsByIdentifiers can resolve during the import.
++	if D1BatchMode {
++		app.Store().Set("pocketflareImportCollections", mappedImported)
++		defer app.Store().Remove("pocketflareImportCollections")
++	}
++
+ 	return app.RunInTransaction(func(txApp App) error {
+ 		existingCollections := []*Collection{}
+ 		if err := txApp.CollectionQuery().OrderBy("updated ASC").All(&existingCollections); err != nil {
+@@ -181,7 +188,7 @@ func (app *BaseApp) ImportCollections(toImport []map[string]any, deleteMissing b
+ 
+ 			validator := newCollectionValidator(
+ 				context.Background(),
+-				txApp,
++				d1ReadApp(txApp),
+ 				imported,
+ 				original,
+ 			)
+diff --git a/core/collection_model.go b/core/collection_model.go
+index 2ed040a..efdbc4d 100644
+--- a/core/collection_model.go
++++ b/core/collection_model.go
+@@ -711,6 +711,15 @@ func onCollectionDeleteExecute(e *CollectionEvent) error {
+ 		}
+ 	}
+ 
++	// check view dependencies outside the transaction.
++	// On D1 we cannot query after queued writes (DROP TABLE),
++	// so dependency detection must run before entering the tx.
++	if !e.Collection.disableIntegrityChecks {
++		if err := checkD1ViewDependencies(e.App, e.Collection); err != nil {
++			return err
++		}
++	}
++
+ 	originalApp := e.App
+ 
+ 	txErr := e.App.RunInTransaction(func(txApp App) error {
+@@ -727,8 +736,7 @@ func onCollectionDeleteExecute(e *CollectionEvent) error {
+ 			}
+ 		}
+ 
+-		if !e.Collection.disableIntegrityChecks {
+-			// trigger views resave to check for dependencies
++		if !D1BatchMode && !e.Collection.disableIntegrityChecks {
+ 			if err := resaveViewsWithChangedFields(txApp, e.Collection.Id); err != nil {
+ 				return fmt.Errorf("[%s] failed to delete due to existing view dependency: %w", e.Collection.Name, err)
+ 			}
+@@ -772,7 +780,7 @@ func (c *Collection) updateGeneratedIdIfExists(app App) {
+ 	// add a number to the current id (if already exists)
+ 	for i := 2; i < 1000; i++ {
+ 		var exists int
+-		_ = app.CollectionQuery().Select("(1)").AndWhere(dbx.HashExp{"id": newId}).Limit(1).Row(&exists)
++		_ = d1ReadApp(app).CollectionQuery().Select("(1)").AndWhere(dbx.HashExp{"id": newId}).Limit(1).Row(&exists)
+ 		if exists == 0 {
+ 			break
+ 		}
+@@ -852,12 +860,14 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 	}()
+ 
+ 	var oldCollection *Collection
++	oldCollectionTableExists := false
+ 	if !e.Collection.IsNew() {
+ 		var err error
+ 		oldCollection, err = e.App.FindCachedCollectionByNameOrId(e.Collection.Id)
+ 		if err != nil {
+ 			return err
+ 		}
++		oldCollectionTableExists = d1ReadApp(e.App).HasTable(oldCollection.Name)
+ 
+ 		// invalidate previously issued auth tokens on auth rule change
+ 		if oldCollection.AuthRule != e.Collection.AuthRule &&
+@@ -866,22 +876,35 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 		}
+ 	}
+ 
++	// Precompute view fields and normalized query outside the write
++	// transaction so D1 batch mode doesn't hit query-after-write.
++	// CreateViewFields and normalizeViewQueryId use temp views that
++	// run in their own short-lived transaction.
++	var viewFields FieldsList
++	var normalizedViewQuery string
++	if e.Collection.IsView() {
++		// Use the parent app if we are inside a transaction to avoid
++		// creating temp views within a D1 batch where reads after
++		// writes are not allowed.
++		viewApp := d1ReadApp(e.App)
++		var err error
++		viewFields, err = viewApp.CreateViewFields(e.Collection.ViewQuery)
++		if err != nil {
++			return err
++		}
++		normalizedViewQuery, err = normalizeViewQueryId(viewApp, e.Collection.ViewQuery)
++		if err != nil {
++			return fmt.Errorf("failed to normalize view query id: %w", err)
++		}
++	}
++
+ 	originalApp := e.App
+ 	txErr := e.App.RunInTransaction(func(txApp App) error {
+ 		e.App = txApp
+ 
+ 		isView := e.Collection.IsView()
+ 
+-		// ensures that the view collection shema is properly loaded
+ 		if isView {
+-			query := e.Collection.ViewQuery
+-
+-			// generate collection fields list from the query
+-			viewFields, err := e.App.CreateViewFields(query)
+-			if err != nil {
+-				return err
+-			}
+-
+ 			// delete old renamed view
+ 			if oldCollection != nil {
+ 				if err := e.App.DeleteView(oldCollection.Name); err != nil {
+@@ -889,14 +912,8 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 				}
+ 			}
+ 
+-			// wrap view query if necessary
+-			query, err = normalizeViewQueryId(e.App, query)
+-			if err != nil {
+-				return fmt.Errorf("failed to normalize view query id: %w", err)
+-			}
+-
+ 			// (re)create the view
+-			if err := e.App.SaveView(e.Collection.Name, query); err != nil {
++			if err := e.App.SaveView(e.Collection.Name, normalizedViewQuery); err != nil {
+ 				return err
+ 			}
+ 
+@@ -911,7 +928,7 @@ func onCollectionSaveExecute(e *CollectionEvent) error {
+ 
+ 		// sync the changes with the related records table
+ 		if !isView {
+-			if err := e.App.SyncRecordTableSchema(e.Collection, oldCollection); err != nil {
++			if err := e.App.SyncRecordTableSchema(e.Collection, oldCollection, oldCollectionTableExists); err != nil {
+ 				// note: don't wrap to allow propagating indexes validation.Errors
+ 				return err
+ 			}
+diff --git a/core/collection_query.go b/core/collection_query.go
+index 3821067..6765201 100644
+--- a/core/collection_query.go
++++ b/core/collection_query.go
+@@ -48,6 +48,10 @@ func (app *BaseApp) FindAllCollections(collectionTypes ...string) ([]*Collection
+ 
+ // ReloadCachedCollections fetches all collections and caches them into the app store.
+ func (app *BaseApp) ReloadCachedCollections() error {
++	if D1BatchMode && app.TxInfo() != nil {
++		app.TxInfo().OnComplete(func(error) error { return d1ReadApp(app).ReloadCachedCollections() })
++		return nil
++	}
+ 	collections, err := app.FindAllCollections()
+ 	if err != nil {
+ 		return err
+@@ -60,6 +64,24 @@ func (app *BaseApp) ReloadCachedCollections() error {
+ 
+ // FindCollectionByNameOrId finds a single collection by its name (case insensitive) or id.
+ func (app *BaseApp) FindCollectionByNameOrId(nameOrId string) (*Collection, error) {
++	// During an import the merged collection map is stored so that lookups
++	// resolve from the in-memory map instead of querying the database
++	// (which may not reflect in-progress changes on D1).
++	if m, ok := app.Store().GetOk("pocketflareImportCollections"); ok {
++		if imported, ok := m.(map[string]*Collection); ok {
++			// check by id first
++			if c, exists := imported[nameOrId]; exists {
++				return c, nil
++			}
++			// check by name (case insensitive)
++			for _, c := range imported {
++				if strings.EqualFold(c.Name, nameOrId) {
++					return c, nil
++				}
++			}
++		}
++	}
++
+ 	m := &Collection{}
+ 
+ 	err := app.CollectionQuery().
+@@ -290,12 +312,21 @@ func normalizeViewQueryId(app App, query string) (string, error) {
+ 
+ // resaveViewsWithChangedFields updates all view collections with changed fields.
+ func resaveViewsWithChangedFields(app App, excludeIds ...string) error {
++	if D1BatchMode && app.TxInfo() != nil {
++		app.TxInfo().OnComplete(func(txErr error) error {
++			if txErr != nil {
++				return nil
++			}
++			return resaveViewsWithChangedFields(d1ReadApp(app), excludeIds...)
++		})
++		return nil
++	}
+ 	collections, err := app.FindAllCollections(CollectionTypeView)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	return app.RunInTransaction(func(txApp App) error {
++	return runViewRead(app, func(txApp App) error {
+ 		var collectionErrors []error
+ 
+ 		for _, collection := range collections {
+@@ -311,7 +342,7 @@ func resaveViewsWithChangedFields(app App, excludeIds ...string) error {
+ 				}
+ 
+ 				// generate new fields from the query
+-				newFields, err := txApp.CreateViewFields(collection.ViewQuery)
++				newFields, err := d1ReadApp(txApp).CreateViewFields(collection.ViewQuery)
+ 				if err != nil {
+ 					return err
+ 				}
+diff --git a/core/collection_record_table_sync.go b/core/collection_record_table_sync.go
+index 93967c5..94fb6f2 100644
+--- a/core/collection_record_table_sync.go
++++ b/core/collection_record_table_sync.go
+@@ -18,15 +18,42 @@ import (
+ // If oldCollection is null, then only newCollection is used to create the record table.
+ //
+ // This method is automatically invoked as part of a collection create/update/delete operation.
+-func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection) error {
++func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection, oldCollectionTableExists ...bool) error {
+ 	if newCollection.IsView() {
+ 		return nil // nothing to sync since views don't have records table
+ 	}
+ 
++	oldTableExists := false
++	if oldCollection != nil {
++		if len(oldCollectionTableExists) > 0 {
++			oldTableExists = oldCollectionTableExists[0]
++		} else {
++			oldTableExists = app.HasTable(oldCollection.Name)
++		}
++	}
++
++	// Pre-fetch view definitions outside the write transaction so that
++	// D1 batch mode does not hit query-after-write. When called from
++	// inside an outer transaction (e.g. onCollectionSaveExecute after
++	// e.Next() has queued a write), route the SELECT through the parent
++	// (non-transactional) app.
++	views := []viewDef{}
++	viewApp := app
++	if info := app.TxInfo(); D1BatchMode && info != nil && info.parent != nil {
++		viewApp = info.parent
++	}
++	if err := viewApp.DB().Select("name", "sql").
++		From("sqlite_master").
++		AndWhere(dbx.NewExp("sql is not null")).
++		AndWhere(dbx.HashExp{"type": "view"}).
++		All(&views); err != nil {
++		return err
++	}
++
+ 	txErr := app.RunInTransaction(func(txApp App) error {
+ 		// create
+ 		// -----------------------------------------------------------
+-		if oldCollection == nil || !app.HasTable(oldCollection.Name) {
++		if oldCollection == nil || !oldTableExists {
+ 			tableName := newCollection.Name
+ 
+ 			fields := newCollection.Fields
+@@ -128,7 +155,7 @@ func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollecti
+ 			}
+ 		}
+ 
+-		if err := normalizeSingleVsMultipleFieldChanges(txApp, newCollection, oldCollection); err != nil {
++		if err := normalizeSingleVsMultipleFieldChanges(txApp, newCollection, oldCollection, views); err != nil {
+ 			return err
+ 		}
+ 
+@@ -152,7 +179,12 @@ func (app *BaseApp) SyncRecordTableSchema(newCollection *Collection, oldCollecti
+ 	return nil
+ }
+ 
+-func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, oldCollection *Collection) error {
++type viewDef struct {
++	Name string `db:"name"`
++	SQL  string `db:"sql"`
++}
++
++func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, oldCollection *Collection, views []viewDef) error {
+ 	if newCollection.IsView() || oldCollection == nil {
+ 		return nil // view or not an update
+ 	}
+@@ -183,21 +215,8 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
+ 
+ 			// temporary drop all views to prevent reference errors during the columns renaming
+ 			// (this is used as an "alternative" to the writable_schema PRAGMA)
+-			views := []struct {
+-				Name string `db:"name"`
+-				SQL  string `db:"sql"`
+-			}{}
+-			err := txApp.DB().Select("name", "sql").
+-				From("sqlite_master").
+-				AndWhere(dbx.NewExp("sql is not null")).
+-				AndWhere(dbx.HashExp{"type": "view"}).
+-				All(&views)
+-			if err != nil {
+-				return err
+-			}
+ 			for _, view := range views {
+-				err = txApp.DeleteView(view.Name)
+-				if err != nil {
++				if err := txApp.DeleteView(view.Name); err != nil {
+ 					return err
+ 				}
+ 			}
+@@ -205,6 +224,8 @@ func normalizeSingleVsMultipleFieldChanges(app App, newCollection *Collection, o
+ 			originalName := newField.GetName()
+ 			oldTempName := "_" + newField.GetName() + security.PseudorandomString(5)
+ 
++			var err error
++
+ 			// rename temporary the original column to something else to allow inserting a new one in its place
+ 			_, err = txApp.DB().RenameColumn(newCollection.Name, originalName, oldTempName).Execute()
+ 			if err != nil {
+diff --git a/core/collection_validate.go b/core/collection_validate.go
+index a63b503..8c8cc72 100644
+--- a/core/collection_validate.go
++++ b/core/collection_validate.go
+@@ -75,7 +75,8 @@ func (validator *collectionValidator) run() error {
+ 
+ 	// generate fields from the query (overwriting any explicit user defined fields)
+ 	if validator.new.IsView() {
+-		validator.new.Fields, _ = validator.app.CreateViewFields(validator.new.ViewQuery)
++		viewApp := d1ReadApp(validator.app)
++		validator.new.Fields, _ = viewApp.CreateViewFields(validator.new.ViewQuery)
+ 	}
+ 
+ 	// validate base fields
+diff --git a/core/view.go b/core/view.go
+index 33995da..c89542d 100644
+--- a/core/view.go
++++ b/core/view.go
+@@ -35,6 +35,11 @@ func (app *BaseApp) DeleteView(dangerousViewName string) error {
+ // NB! Be aware that this method is vulnerable to SQL injection and
+ // its arguments must come only from trusted input!
+ func (app *BaseApp) SaveView(dangerousViewName string, dangerousSelectQuery string) error {
++	if D1BatchMode {
++		if _, err := d1QueryTableInfo(app, dangerousSelectQuery); err != nil {
++			return err
++		}
++	}
+ 	return app.RunInTransaction(func(txApp App) error {
+ 		// delete old view (if exists)
+ 		err := txApp.DeleteView(dangerousViewName)
+@@ -59,12 +64,15 @@ func (app *BaseApp) SaveView(dangerousViewName string, dangerousSelectQuery stri
+ 
+ 		// fetch the view table info to ensure that the view was created
+ 		// because missing tables or columns won't return an error
+-		if _, err := txApp.TableInfo(dangerousViewName); err != nil {
+-			// manually cleanup previously created view in case the func
+-			// is called in a nested transaction and the error is discarded
+-			txApp.DeleteView(dangerousViewName)
++		if !D1BatchMode {
++			if _, err := txApp.TableInfo(dangerousViewName); err != nil {
++				// manually cleanup previously created view in case the func
++				// is called in a nested transaction and the error is discarded
++				txApp.DeleteView(dangerousViewName)
++
++				return err
++			}
+ 
+-			return err
+ 		}
+ 
+ 		return nil
+@@ -89,7 +97,7 @@ func (app *BaseApp) CreateViewFields(dangerousSelectQuery string) (FieldsList, e
+ 
+ 	// note wrap in a transaction in case the dangerousSelectQuery contains
+ 	// multiple statements allowing us to rollback on any error
+-	txErr := app.RunInTransaction(func(txApp App) error {
++	txErr := runViewRead(app, func(txApp App) error {
+ 		info, err := getQueryTableInfo(txApp, dangerousSelectQuery)
+ 		if err != nil {
+ 			return err
+@@ -165,6 +173,13 @@ func (app *BaseApp) DryRunView(dangerousSelectQuery string, sampleSize int) (*Dr
+ 		return nil, fmt.Errorf("failed to normalize view query id: %w", err)
+ 	}
+ 
++	if D1BatchMode {
++		dangerousSelectQuery, err = d1ViewQuery(d1ReadApp(app), dangerousSelectQuery)
++		if err != nil {
++			return nil, err
++		}
++	}
++
+ 	records := []*Record{}
+ 
+ 	err = app.RecordQuery(tempCollection).
+@@ -516,6 +531,14 @@ func findCollectionsByIdentifiers(app App, tables []identifier) (map[string]*Col
+ 		return nil, err
+ 	}
+ 
++	// Overlay pending definitions on the existing schema; unmodified source
++	// collections must still contribute their field types during an import.
++	if imported, ok := app.Store().Get("pocketflareImportCollections").(map[string]*Collection); ok {
++		for _, collection := range imported {
++			collections = append(collections, collection)
++		}
++	}
++
+ 	for _, table := range tables {
+ 		for _, collection := range collections {
+ 			if collection.Name == table.original {
+@@ -528,6 +551,9 @@ func findCollectionsByIdentifiers(app App, tables []identifier) (map[string]*Col
+ }
+ 
+ func getQueryTableInfo(app App, selectQuery string) ([]*TableInfoRow, error) {
++	if D1BatchMode {
++		return d1QueryTableInfo(app, selectQuery)
++	}
+ 	tempView := "_temp_" + security.PseudorandomString(6)
+ 
+ 	var info []*TableInfoRow

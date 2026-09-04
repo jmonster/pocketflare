@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { getUserSchemaObjects } from "../lib/restore-schema.mjs";
 
 // restore-backup.mjs — Restore a PocketBase backup zip into a Pocketflare target.
 //
@@ -7,9 +8,9 @@
 // Usage:
 //   node scripts/restore-backup.mjs <worker-url> <backup.zip> --token <superuser-token>
 //
-// The script uses JSZip and sql.js from the admin UI build dependencies.
+// The script uses JSZip and sql.js from the Pocketflare dependencies.
 // Install them first:
-//   cd internal/pocketbase/ui && pnpm install
+//   pnpm install
 //
 // Progress is printed to stderr; final result is printed to stdout as JSON.
 // Exits 0 on success, non-zero on any failure.
@@ -20,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const UI_NODE_MODULES = resolve(__dirname, "../internal/pocketbase/ui/node_modules");
+const RESTORE_NODE_MODULES = resolve(__dirname, "../node_modules");
 
 const D1_MAX_BOUND_PARAMS = 100;
 const FILE_UPLOAD_CONCURRENCY = 3;
@@ -85,14 +86,14 @@ async function main() {
     process.exit(1);
   }
 
-  // Resolve JSZip and sql.js from the admin UI build dependencies.
+  // Resolve JSZip and sql.js from the Pocketflare dependencies.
   let JSZip, initSqlJs;
   try {
-    JSZip = (await import(resolve(UI_NODE_MODULES, "jszip/dist/jszip.min.js"))).default;
-    initSqlJs = (await import(resolve(UI_NODE_MODULES, "sql.js/dist/sql-wasm.js"))).default;
+    JSZip = (await import(resolve(RESTORE_NODE_MODULES, "jszip/dist/jszip.min.js"))).default;
+    initSqlJs = (await import(resolve(RESTORE_NODE_MODULES, "sql.js/dist/sql-wasm.js"))).default;
   } catch {
-    console.error("Error: JSZip or sql.js not found. Install admin UI dependencies:");
-    console.error("  cd internal/pocketbase/ui && pnpm install");
+    console.error("Error: JSZip or sql.js not found. Install Pocketflare dependencies:");
+    console.error("  pnpm install");
     process.exit(1);
   }
 
@@ -301,38 +302,17 @@ async function importDatabase(api, dataDB, auxDB, sessionId) {
 
   // Phase D: recreate indexes, views, and triggers for user tables.
   const schemaObjects = getUserSchemaObjects(dataDB, auxDB);
-  if (schemaObjects.length > 0) {
-    log("Creating indexes and views (" + schemaObjects.length + " objects)...");
-    const dbTarget = tableDBName(dataDB, auxDB, schemaObjects[0].tableName || userTables[0]?.name || "_");
+  for (const dbTarget of ["app", "aux"]) {
+    const objects = schemaObjects.filter((o) => o.db === dbTarget);
+    if (!objects.length) continue;
+    log("Creating indexes and views (" + objects.length + " objects)...");
     await api.post("/api/pocketflare/restore/database", {
       sessionId, db: dbTarget,
-      statements: schemaObjects.map((o) => ({ sql: o.sql, params: [] })),
+      statements: objects.map((o) => ({ sql: o.sql, params: [] })),
     });
   }
 
   log("Database import complete.");
-}
-
-function getUserSchemaObjects(dataDB, auxDB) {
-  const objects = [];
-  for (const db of [dataDB, auxDB]) {
-    if (!db) continue;
-    const result = db.exec(
-      "SELECT type, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type IN ('index','view','trigger') AND tbl_name NOT LIKE '_%' AND tbl_name NOT LIKE 'sqlite_%'",
-    );
-    if (result.length === 0) continue;
-    for (const row of result[0].values) {
-      const [type, tblName, sql] = row;
-      if (!sql || typeof sql !== "string") continue;
-      if (sql.includes("sqlite_autoindex")) continue;
-      let ddl = sql.trim();
-      if (type === "index" && !ddl.toUpperCase().includes("IF NOT EXISTS")) {
-        ddl = ddl.replace(/CREATE INDEX/i, "CREATE INDEX IF NOT EXISTS");
-      }
-      objects.push({ type, tableName: tblName, sql: ddl });
-    }
-  }
-  return objects;
 }
 
 function getTablesFromDB(db) {

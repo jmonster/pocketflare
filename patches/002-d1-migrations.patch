@@ -1,0 +1,142 @@
+diff --git a/core/migrations_d1.go b/core/migrations_d1.go
+new file mode 100644
+index 0000000..625bd33
+--- /dev/null
++++ b/core/migrations_d1.go
+@@ -0,0 +1,11 @@
++package core
++
++func (r *MigrationsRunner) runInTransaction(app App, aux bool, fn func(App) error) error {
++	if D1BatchMode {
++		return fn(app)
++	}
++	if aux {
++		return app.AuxRunInTransaction(fn)
++	}
++	return app.RunInTransaction(fn)
++}
+diff --git a/core/migrations_runner.go b/core/migrations_runner.go
+index 9b0ff76..e1d8175 100644
+--- a/core/migrations_runner.go
++++ b/core/migrations_runner.go
+@@ -126,8 +126,8 @@ func (r *MigrationsRunner) Up() ([]string, error) {
+ 
+ 	applied := []string{}
+ 
+-	err := r.app.AuxRunInTransaction(func(txApp App) error {
+-		return txApp.RunInTransaction(func(txApp App) error {
++	err := r.runInTransaction(r.app, true, func(txApp App) error {
++		return r.runInTransaction(txApp, false, func(txApp App) error {
+ 			for _, m := range r.migrationsList.Items() {
+ 				// applied migrations check
+ 				if r.isMigrationApplied(txApp, m.File) {
+@@ -188,8 +188,8 @@ func (r *MigrationsRunner) Down(toRevertCount int) ([]string, error) {
+ 		return nil, appliedErr
+ 	}
+ 
+-	err := r.app.AuxRunInTransaction(func(txApp App) error {
+-		return txApp.RunInTransaction(func(txApp App) error {
++	err := r.runInTransaction(r.app, true, func(txApp App) error {
++		return r.runInTransaction(txApp, false, func(txApp App) error {
+ 			for _, name := range names {
+ 				for _, m := range r.migrationsList.Items() {
+ 					if m.File != name {
+diff --git a/migrations/1640988000_init.go b/migrations/1640988000_init.go
+index 541f045..6b93f5a 100644
+--- a/migrations/1640988000_init.go
++++ b/migrations/1640988000_init.go
+@@ -35,7 +35,7 @@ func init() {
+ 		// -----------------------------------------------------------
+ 
+ 		_, execerr := txApp.DB().NewQuery(`
+-			CREATE TABLE {{_collections}} (
++			CREATE TABLE IF NOT EXISTS {{_collections}} (
+ 				[[id]]         TEXT PRIMARY KEY DEFAULT ('r'||lower(hex(randomblob(7)))) NOT NULL,
+ 				[[system]]     BOOLEAN DEFAULT FALSE NOT NULL,
+ 				[[type]]       TEXT DEFAULT "base" NOT NULL,
+@@ -106,7 +106,7 @@ func init() {
+ 
+ func createParamsTable(txApp core.App) error {
+ 	_, execErr := txApp.DB().NewQuery(`
+-		CREATE TABLE {{_params}} (
++		CREATE TABLE IF NOT EXISTS {{_params}} (
+ 			[[id]]      TEXT PRIMARY KEY DEFAULT ('r'||lower(hex(randomblob(7)))) NOT NULL,
+ 			[[value]]   JSON DEFAULT NULL,
+ 			[[created]] TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%fZ')) NOT NULL,
+@@ -153,7 +153,7 @@ func createMFAsCollection(txApp core.App) error {
+ 	})
+ 	col.AddIndex("idx_mfas_collectionRef_recordRef", false, "collectionRef,recordRef", "")
+ 
+-	return txApp.Save(col)
++	return txApp.SaveNoValidate(col)
+ }
+ 
+ func createOTPsCollection(txApp core.App) error {
+@@ -199,7 +199,7 @@ func createOTPsCollection(txApp core.App) error {
+ 	})
+ 	col.AddIndex("idx_otps_collectionRef_recordRef", false, "collectionRef, recordRef", "")
+ 
+-	return txApp.Save(col)
++	return txApp.SaveNoValidate(col)
+ }
+ 
+ func createAuthOriginsCollection(txApp core.App) error {
+@@ -239,7 +239,7 @@ func createAuthOriginsCollection(txApp core.App) error {
+ 	})
+ 	col.AddIndex("idx_authOrigins_unique_pairs", true, "collectionRef, recordRef, fingerprint", "")
+ 
+-	return txApp.Save(col)
++	return txApp.SaveNoValidate(col)
+ }
+ 
+ func createExternalAuthsCollection(txApp core.App) error {
+@@ -285,7 +285,7 @@ func createExternalAuthsCollection(txApp core.App) error {
+ 	col.AddIndex("idx_externalAuths_record_provider", true, "collectionRef, recordRef, provider", "")
+ 	col.AddIndex("idx_externalAuths_collection_provider", true, "collectionRef, provider, providerId", "")
+ 
+-	return txApp.Save(col)
++	return txApp.SaveNoValidate(col)
+ }
+ 
+ func createSuperusersCollection(txApp core.App) error {
+@@ -309,7 +309,7 @@ func createSuperusersCollection(txApp core.App) error {
+ 	})
+ 	superusers.AuthToken.Duration = 86400 // 1 day
+ 
+-	return txApp.Save(superusers)
++	return txApp.SaveNoValidate(superusers)
+ }
+ 
+ func createUsersCollection(txApp core.App) error {
+@@ -343,5 +343,5 @@ func createUsersCollection(txApp core.App) error {
+ 	users.OAuth2.MappedFields.Name = "name"
+ 	users.OAuth2.MappedFields.AvatarURL = "avatar"
+ 
+-	return txApp.Save(users)
++	return txApp.SaveNoValidate(users)
+ }
+diff --git a/migrations/1717233557_v0.23_migrate2.go b/migrations/1717233557_v0.23_migrate2.go
+index 6a26e9c..5821ce0 100644
+--- a/migrations/1717233557_v0.23_migrate2.go
++++ b/migrations/1717233557_v0.23_migrate2.go
+@@ -8,11 +8,6 @@ import (
+ 
+ func init() {
+ 	core.SystemMigrations.Register(func(txApp core.App) error {
+-		_, err := txApp.DB().NewQuery("CREATE INDEX IF NOT EXISTS idx__collections_type on {{_collections}} ([[type]]);").Execute()
+-		if err != nil {
+-			return err
+-		}
+-
+ 		// reset mfas and otps delete rule
+ 		collectionNames := []string{core.CollectionNameMFAs, core.CollectionNameOTPs}
+ 		for _, name := range collectionNames {
+@@ -30,6 +25,7 @@ func init() {
+ 			}
+ 		}
+ 
+-		return nil
++		_, err := txApp.DB().NewQuery("CREATE INDEX IF NOT EXISTS idx__collections_type on {{_collections}} ([[type]]);").Execute()
++		return err
+ 	}, nil)
+ }

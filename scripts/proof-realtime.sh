@@ -130,7 +130,7 @@ green "  wrangler.proof-realtime.toml created"
 
 # ── 3. Start wrangler dev ──
 echo "── 3. Starting wrangler dev ──"
-pnpm exec wrangler dev --port 0 --config wrangler.proof-realtime.toml --var POCKETFLARE_REALTIME_WORKER_BRIDGE:1 > "$ARTIFACT_DIR/dev.log" 2>&1 &
+"$ROOT/node_modules/.bin/wrangler" dev --port 0 --config wrangler.proof-realtime.toml --var POCKETFLARE_REALTIME_WORKER_BRIDGE:1 > "$ARTIFACT_DIR/dev.log" 2>&1 &
 WRANGLER_PID=$!
 
 BASE=""

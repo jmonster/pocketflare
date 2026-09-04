@@ -1,4 +1,5 @@
 import { expect, request, test } from "@playwright/test";
+import JSZip from "jszip";
 
 const baseURL = (process.env.POCKETFLARE_E2E_BASE_URL || "").replace(/\/+$/, "");
 const adminEmail = process.env.POCKETFLARE_ADMIN_EMAIL || "";
@@ -24,6 +25,21 @@ test("restore Start Over preserves resume state when cancel is unsafe", async ({
     expect(auth.ok(), await auth.text()).toBeTruthy();
     token = (await auth.json()).token;
     expect(token).toBeTruthy();
+
+    await page.goto(`${baseURL}/_/#/login`);
+    await page.locator("#login_identity").fill(adminEmail);
+    await page.locator("#login_pass").fill(adminPassword);
+    await page.getByRole("button", { name: /login/i }).click();
+    await expect(page).toHaveURL(/#\/collections/);
+
+    // Exercise the extension routes and the lazy SQLite WASM bundle before a restore starts.
+    await page.goto(`${baseURL}/_/#/settings/storage`);
+    await expect(page.getByText("Pocketflare stores uploaded files in Cloudflare R2.")).toBeVisible();
+    await page.goto(`${baseURL}/_/#/settings/backups`);
+    const emptyZip = await new JSZip().generateAsync({ type: "nodebuffer" });
+    await page.locator('input[type="file"]').setInputFiles({ name: "empty.zip", mimeType: "application/zip", buffer: emptyZip });
+    await expect(page.getByText(/Backup zip does not contain data.db/)).toBeVisible();
+    await page.goto(`${baseURL}/_/#/collections`);
 
     const start = await api.post("/api/pocketflare/restore/start", {
       headers: { Authorization: `Bearer ${token}` },
@@ -52,12 +68,6 @@ test("restore Start Over preserves resume state when cancel is unsafe", async ({
     expect(session.ok(), await session.text()).toBeTruthy();
     const sessionBody = await session.json();
     expect(sessionBody.dbProgress?.batchesDone).toBeGreaterThan(0);
-
-    await page.goto(`${baseURL}/_/#/login`);
-    await page.locator("#login_identity").fill(adminEmail);
-    await page.locator("#login_pass").fill(adminPassword);
-    await page.getByRole("button", { name: /login/i }).click();
-    await expect(page).toHaveURL(/#\/collections/);
 
     await page.goto(`${baseURL}/_/#/settings/backups`);
     await expect(page.locator('[data-test="restore-active-session"]')).toBeVisible();

@@ -3,7 +3,7 @@
 #
 # Starts wrangler dev, waits for WASM boot, hits /api/health, then runs a
 # collection field flip (multi→single→multi) to exercise the
-# normalizeSingleVsMultipleFieldChanges path patched in 017-d1-parity-fixes.
+# normalizeSingleVsMultipleFieldChanges path patched in 003-d1-collections.
 #
 # Usage:
 #   ./scripts/proof-d1-bootstrap.sh
@@ -52,7 +52,7 @@ echo ""
 # ── 1. Start wrangler dev ──
 echo "── 1. Starting wrangler dev ──"
 cd "$ROOT"
-pnpm exec wrangler dev --port 0 --persist-to "$STATE_DIR" > "$ARTIFACT_DIR/dev.log" 2>&1 &
+"$ROOT/node_modules/.bin/wrangler" dev --port 0 --persist-to "$STATE_DIR" > "$ARTIFACT_DIR/dev.log" 2>&1 &
 WRANGLER_PID=$!
 
 # Extract the actual port wrangler chose.

@@ -29,7 +29,7 @@ binding = "BACKUPS"
 bucket_name = "pocketflare-backups"
 
 [assets]
-directory = "./admin-ui"
+directory = "./dist/admin-ui"
 binding = "ASSETS"
 
 [triggers]

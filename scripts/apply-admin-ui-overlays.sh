@@ -1,15 +1,24 @@
 #!/bin/bash
+# Build the pinned upstream dashboard, then add Pocketflare's extension module.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ADMIN_UI="$ROOT/admin-ui/_"
+PB_UI="$ROOT/internal/pocketbase/ui"
+ADMIN_UI="$ROOT/dist/admin-ui/_"
 
-if [[ ! -d "$ADMIN_UI" ]]; then
-	echo "ERROR: admin-ui/_ does not exist. Build and sync the admin UI before applying overlays." >&2
-	exit 1
+if [[ ! -f "$PB_UI/package.json" ]]; then
+    echo "Run ./scripts/update-pb.sh before building the admin UI." >&2
+    exit 1
 fi
-
-install -d "$ADMIN_UI/images"
-cp "$ROOT/branding/logo.png" "$ADMIN_UI/images/logo.png"
-echo "Applied admin UI overlays."
+if [[ ! -f "$PB_UI/node_modules/.package-lock.json" || "$PB_UI/package-lock.json" -nt "$PB_UI/node_modules/.package-lock.json" ]]; then
+    npm --prefix "$PB_UI" ci --no-audit --no-fund
+fi
+npm --prefix "$PB_UI" run build
+mkdir -p "$ADMIN_UI"
+rsync -a --delete "$PB_UI/dist/" "$ADMIN_UI/"
+cd "$ROOT"
+pnpm exec esbuild ui/extensions.js --bundle --splitting --format=esm --platform=browser \
+    --outdir="$ADMIN_UI" --chunk-names='assets/pocketflare-[name]-[hash]' --minify
+cp node_modules/sql.js/dist/sql-wasm-browser.wasm "$ADMIN_UI/assets/"
+echo "Built PocketBase admin UI with Pocketflare extensions."

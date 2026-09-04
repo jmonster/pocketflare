@@ -1,9 +1,11 @@
-.PHONY: build deploy dev clean update-pb admin-ui-overlays brand proof proof-critical
+.PHONY: build deploy dev clean update-pb admin-ui-overlays proof proof-critical
 
-build:
+build: admin-ui-overlays
 	mkdir -p dist
 	GOOS=js GOARCH=wasm go build -tags no_default_driver -trimpath -ldflags="-s -w" -o dist/app.wasm ./cmd/pocketflare
-	cp wasm_exec.js worker.mjs runtime.mjs app-do.mjs realtime-do.mjs smtp-transport.mjs dist/
+	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" dist/
+	git apply --directory=dist runtime/wasm_exec.patch
+	cp worker.mjs runtime.mjs app-do.mjs realtime-do.mjs smtp-transport.mjs dist/
 
 deploy: build
 	pnpm exec wrangler deploy
@@ -19,8 +21,6 @@ update-pb:
 
 admin-ui-overlays:
 	./scripts/apply-admin-ui-overlays.sh
-
-brand: admin-ui-overlays
 
 proof: proof-critical
 proof-critical:

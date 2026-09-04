@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-VERSION="${1:-v0.39.1}"
+VERSION="${1:-v0.40.2}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PB_DIR="$PROJECT_DIR/internal/pocketbase"
@@ -41,6 +41,4 @@ for patch in "$PATCHES_DIR"/*.patch; do
 done
 
 echo "Done. PocketBase ${VERSION} is ready."
-echo "Next: build admin UI (cd internal/pocketbase/ui && pnpm install && pnpm build)"
-echo "      then sync ui/dist/ into admin-ui/_/"
-echo "      then run make admin-ui-overlays"
+echo "Next: pnpm install && make build"

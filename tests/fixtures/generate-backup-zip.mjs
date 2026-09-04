@@ -2,14 +2,14 @@
 // generate-backup-zip.mjs — Generate a minimal PocketBase v0.39.0 backup zip fixture.
 //
 // Usage:   node tests/fixtures/generate-backup-zip.mjs
-// Deps:    cd internal/pocketbase/ui && pnpm install
+// Deps:    pnpm install
 
 import { writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const UI_NODE_MODULES = resolve(__dirname, "../../internal/pocketbase/ui/node_modules");
+const RESTORE_NODE_MODULES = resolve(__dirname, "../../node_modules");
 const outPath = resolve(__dirname, "minimal-backup.zip");
 
 function ts() {
@@ -19,21 +19,21 @@ function ts() {
 async function main() {
   let JSZip, initSqlJs;
   try {
-    JSZip = (await import(resolve(UI_NODE_MODULES, "jszip/dist/jszip.min.js"))).default;
+    JSZip = (await import(resolve(RESTORE_NODE_MODULES, "jszip/dist/jszip.min.js"))).default;
   } catch (e) {
     console.error("Failed to import JSZip:", e.message);
-    console.error("Install: cd internal/pocketbase/ui && pnpm install");
+    console.error("Install: pnpm install");
     process.exit(1);
   }
   try {
-    initSqlJs = (await import(resolve(UI_NODE_MODULES, "sql.js/dist/sql-wasm.js"))).default;
+    initSqlJs = (await import(resolve(RESTORE_NODE_MODULES, "sql.js/dist/sql-wasm.js"))).default;
   } catch (e) {
     console.error("Failed to import sql.js:", e.message);
-    console.error("Install: cd internal/pocketbase/ui && pnpm install");
+    console.error("Install: pnpm install");
     process.exit(1);
   }
 
-  const sqlWasmPath = resolve(UI_NODE_MODULES, "sql.js/dist/sql-wasm.wasm");
+  const sqlWasmPath = resolve(RESTORE_NODE_MODULES, "sql.js/dist/sql-wasm.wasm");
   const SQL = await initSqlJs({ locateFile: () => sqlWasmPath });
   const db = new SQL.Database();
   const now = ts();

@@ -1,35 +1,31 @@
-# Pocketflare Patch Manifest
+# Pocketflare patches
 
-| Patch file | Bytes | Category | Upstream? |
-|---|---:|---|---|
-| `000-base-wasm-stubs.patch` | 1358 | behavioral-platform | No |
-| `001-bootstrap-wasm.patch` | 3230 | behavioral-platform | No |
-| `002-filesystem-wasm.patch` | 3129 | behavioral-platform | No |
-| `003-nil-body-fix.patch` | 1534 | behavioral-upstream | Yes |
-| `004-filesystem-newblob.patch` | 3476 | behavioral-upstream | Yes |
-| `005-cron-rundue.patch` | 1084 | behavioral-upstream | Yes |
-| `006-realtime-wasm.patch` | 1353 | behavioral-platform | No |
-| `007-defaultclient-setid.patch` | 737 | behavioral-upstream | Yes |
-| `008a-accent-color.patch` | 431 | admin-ui | No |
-| `008b-pocketflare-branding-ui.patch` | 5605 | admin-ui | No |
-| `009-idempotent-migrations.patch` | 3624 | behavioral-d1 | Partial |
-| `010-d1-transaction-compat.patch` | 16020 | behavioral-d1 | No |
-| `011-do-sqlite-transaction-hook.patch` | 2701 | behavioral-platform | No |
-| `012-d1-migrations-without-outer-tx.patch` | 4868 | behavioral-d1 | No |
-| `013-active-restore-bootstrap.patch` | 2498 | behavioral-platform | No |
-| `015-restore-feature.patch` | 483004 | admin-ui | No |
-| `016-storage-settings.patch` | 8696 | admin-ui | No |
-| `017a-sql-splitter.patch` | 4643 | behavioral-d1 | No |
-| `017b-skip-system-migrations.patch` | 967 | behavioral-platform | No |
-| `017c-import-view-resolution.patch` | 2974 | behavioral-d1 | No |
-| `017d-view-fields-parent.patch` | 1736 | behavioral-d1 | No |
-| `017e-field-type-prefetch.patch` | 3202 | behavioral-d1 | No |
-| `017f-cascade-delete-bfs.patch` | 7498 | behavioral-d1 | No |
-| `017g-restore-resume-ui.patch` | 12975 | admin-ui | No |
+Target: **PocketBase v0.40.2**. Apply these patches in filename order with
+`./scripts/update-pb.sh`; implementations that do not need private PocketBase
+internals live in this repository.
 
-## Categories
+| Patch | Purpose | Implementation owner |
+|---|---|---|
+| `001-worker-runtime.patch` | WASM bootstrap, injected filesystem constructors, external transaction/realtime/cron entry points, restore bootstrap control, optional record-delete and SQL-console hooks | `adapter/`, `adapter/d1/`, `adapter/wasmdb/` |
+| `002-d1-migrations.patch` | D1 initialization and migration execution without an outer deferred transaction | PocketBase migration internals; enabled by `core.D1BatchMode` |
+| `003-d1-collections.patch` | Read schema metadata before queuing D1 writes, resolve imported collection definitions, and check view dependencies | PocketBase collection internals; parent-connection reads are limited to D1 |
 
-- **admin-ui**: Cosmetic or UI-only changes, including branding, restore page, and storage settings. No behavioral impact on PocketBase core.
-- **behavioral-platform**: WASM or Cloudflare Workers platform adaptations. Pocketflare-specific, not upstreamable.
-- **behavioral-d1**: D1 batch-transaction workarounds. Tied to Cloudflare D1's transaction model.
-- **behavioral-upstream**: Bug fixes or generally useful extensions that could be proposed to upstream PocketBase.
+There are no patches to the upstream dashboard, package manifest, logos, colors,
+or version branding. `ui/extensions.js` uses PocketBase's existing extension
+loader to register the restore and R2 settings pages. The restore UI and CLI use
+root JS dependencies and share schema selection in `lib/restore-schema.mjs`.
+`make build` builds the pinned upstream dashboard from its npm lockfile and adds
+these extensions under `dist/admin-ui/_/`. SQLite WASM and all other generated
+assets stay out of the patch stack and source control. A separate 1.1 KB
+`runtime/wasm_exec.patch` supplies the per-instance Workers context bridge to the
+active Go compiler's runtime file, replacing the checked-in copy of that file.
+
+Native SQLite and DO SQLite retain upstream cascade deletion and transaction
+reads. The D1 cascade planner and SQL parser are independently testable under
+`adapter/d1/`; the filesystem injection preserves PocketBase 0.40's file hooks.
+
+Validation: `make proof` builds the real Worker, checks the latest release,
+replays these patches in a fresh checkout, compares the patched files with the
+built sources, runs adapter/restore regressions, and exercises the local Worker
+proofs. `pnpm run test:e2e:restore-ui` separately checks the dashboard extension
+against the local URL and credentials supplied through its environment variables.

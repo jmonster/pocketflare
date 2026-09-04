@@ -7,8 +7,7 @@
 # (depends on view_a) individually via POST /api/collections, then verifies
 # a base record appears through both views.
 #
-# Also asserts that PUT /api/collections/import hangs in DO SQLite mode
-# (this is the known limitation; individual POST is the workaround).
+# Also imports a base collection and two dependent views in one transaction.
 #
 # Usage:
 #   ./scripts/proof-do-sqlite-view-chained.sh
@@ -90,7 +89,7 @@ green "  wrangler.proof-do-sqlite-views.toml created"
 
 # ── 3. Start wrangler dev in DO SQLite mode ──
 echo "── 3. Starting wrangler dev (DO SQLite mode) ──"
-pnpm exec wrangler dev --port 0 --config "$TEMP_WRANGLER" --persist-to "$STATE_DIR" \
+"$ROOT/node_modules/.bin/wrangler" dev --port 0 --config "$TEMP_WRANGLER" --persist-to "$STATE_DIR" \
 	--var POCKETFLARE_DB_MODE:do_sqlite \
 	--var POCKETFLARE_ADMIN_EMAIL:"$ADMIN_EMAIL" \
 	--var POCKETFLARE_ADMIN_PASSWORD:"$ADMIN_PASSWORD" \
@@ -277,14 +276,19 @@ VIEW2_POST_DEL=$(curl -sS --max-time 30 "$BASE/api/collections/$VIEW2_COLL/recor
 	-H "Authorization: Bearer $TOKEN" 2>/dev/null | jq -r '.totalItems // 0' 2>/dev/null)
 assert "view2 empty after base record deleted" '[ "$VIEW2_POST_DEL" = "0" ]'
 
-# ── 12. Document import API limitation ──
-echo "── 12. Import API limitation ──"
-IMPORT_HTTP=$(curl -sS --max-time 5 -o /dev/null -w "%{http_code}" \
+# ── 12. Import a base collection and chained views atomically ──
+echo "── 12. Import API ──"
+IMPORT_HTTP=$(curl -sS --max-time 30 -o "$ARTIFACT_DIR/import.json" -w "%{http_code}" \
 	-X PUT "$BASE/api/collections/import" \
 	-H "Authorization: Bearer $TOKEN" \
 	-H "Content-Type: application/json" \
-	-d "$(jq -n '{deleteMissing:false,collections:[{name:"test_import_probe",type:"base",fields:[{name:"x",type:"text"}]}]}')" 2>/dev/null || true)
-assert "PUT /api/collections/import hangs in DO SQLite (known issue)" '[ "${IMPORT_HTTP:-000}" = "000" ]'
+	-d '{"deleteMissing":false,"collections":[{"name":"test_import_probe","type":"base","fields":[{"name":"x","type":"text"}]},{"name":"test_import_view_a","type":"view","viewQuery":"select id,x from test_import_probe"},{"name":"test_import_view_b","type":"view","viewQuery":"select id,x from test_import_view_a"}]}' 2>/dev/null || true)
+assert "PUT /api/collections/import returns 204" '[ "${IMPORT_HTTP:-000}" = "204" ]'
+IMPORTED_RECORD=$(curl -sS --max-time 30 -X POST "$BASE/api/collections/test_import_probe/records" \
+	-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"x":"imported"}')
+IMPORTED_ID=$(echo "$IMPORTED_RECORD" | jq -r '.id // empty')
+IMPORTED_VIEW=$(curl -sS --max-time 30 "$BASE/api/collections/test_import_view_b/records" -H "Authorization: Bearer $TOKEN")
+assert "imported chained view returns its base record" '[ -n "$IMPORTED_ID" ] && [ "$(echo "$IMPORTED_VIEW" | jq -r ".items[0].id // empty")" = "$IMPORTED_ID" ]'
 
 # ── 13. Check for errors in dev log ──
 echo "── 13. Log checks ──"

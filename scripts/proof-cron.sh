@@ -66,7 +66,7 @@ ADMIN_EMAIL="proof-cron@test.local"
 ADMIN_PASSWORD="test123456"
 
 cd "$ROOT"
-pnpm exec wrangler dev --port 0 \
+"$ROOT/node_modules/.bin/wrangler" dev --port 0 \
     --var POCKETFLARE_ADMIN_EMAIL:"$ADMIN_EMAIL" \
     --var POCKETFLARE_ADMIN_PASSWORD:"$ADMIN_PASSWORD" \
     --var POCKETFLARE_ENABLE_PROOF_ROUTES:1 \

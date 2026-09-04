@@ -1,0 +1,391 @@
+diff --git a/apis/pocketflare.go b/apis/pocketflare.go
+new file mode 100644
+index 0000000..bd8e783
+--- /dev/null
++++ b/apis/pocketflare.go
+@@ -0,0 +1,5 @@
++package apis
++
++// PrepareSQLQuery lets a driver split and classify SQL console requests.
++// Nil leaves upstream SQLite query handling unchanged.
++var PrepareSQLQuery func(string) (statements []string, isWrite bool, err error)
+diff --git a/apis/realtime.go b/apis/realtime.go
+index d6d8b58..9454311 100644
+--- a/apis/realtime.go
++++ b/apis/realtime.go
+@@ -22,6 +22,12 @@ import (
+ 	"golang.org/x/sync/errgroup"
+ )
+ 
++// WasmRealtimeClientProvider is an optional function that creates a
++// subscription client for external connection managers (e.g. Durable Objects
++// on Cloudflare Workers). When set, it is called as a fallback when a client
++// is not found in the broker during realtimeSetSubscriptions.
++var WasmRealtimeClientProvider func(app core.App, clientId string) (subscriptions.Client, error)
++
+ // note: the chunk size is arbitrary chosen and may change in the future
+ const clientsChunkSize = 150
+ 
+@@ -197,7 +203,16 @@ func realtimeSetSubscriptions(e *core.RequestEvent) error {
+ 	// find subscription client
+ 	client, err := e.App.SubscriptionsBroker().ClientById(form.ClientId)
+ 	if err != nil {
+-		return e.NotFoundError("Missing or invalid client id.", err)
++		// WASM/Workers: try external client provider
++		if WasmRealtimeClientProvider != nil {
++			client, err = WasmRealtimeClientProvider(e.App, form.ClientId)
++			if err == nil {
++				e.App.SubscriptionsBroker().Register(client)
++			}
++		}
++		if err != nil {
++			return e.NotFoundError("Missing or invalid client id.", err)
++		}
+ 	}
+ 
+ 	// for just in case to prevent someone changing a guest subscription
+diff --git a/apis/sql.go b/apis/sql.go
+index 47cabc7..6b71bd9 100644
+--- a/apis/sql.go
++++ b/apis/sql.go
+@@ -98,6 +98,16 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 		}
+ 	}
+ 
++	statements := []string{query}
++	if PrepareSQLQuery != nil {
++		var err error
++		statements, isPossibleWriteQuery, err = PrepareSQLQuery(query)
++		if err != nil {
++			return nil, err
++		}
++		query = strings.Join(statements, ";\n")
++	}
++
+ 	// note: don't extend the request context to minimize the risk of
+ 	// causing integrity issues with custom non-transaction mutations
+ 	ctx, cancelFunc := context.WithTimeout(context.Background(), runSQLMaxTimeout)
+@@ -117,19 +127,22 @@ func executeQuery(app core.App, query string, maxRows int) (*runSQLResult, error
+ 	// assume write/mutation query
+ 	// ---------------------------------------------------------------
+ 	if isPossibleWriteQuery {
+-		// auto wrap in transaction in case there are multiple inline queries
+ 		txErr := app.RunInTransaction(func(txApp core.App) error {
+-			execResult, err := txApp.NonconcurrentDB().NewQuery(query).WithContext(ctx).Execute()
+-			if err != nil {
+-				return err
+-			}
+-
+-			result.AffectedRows, err = execResult.RowsAffected()
+-			if err != nil {
+-				// non-critical error (e.g. not supported by the driver)
+-				txApp.Logger().Debug("Unable to fetch affected rows", slog.String("error", err.Error()))
++			var totalAffected int64
++			for _, stmt := range statements {
++				execResult, execErr := txApp.NonconcurrentDB().NewQuery(stmt).WithContext(ctx).Execute()
++				if execErr != nil {
++					return execErr
++				}
++
++				n, err := execResult.RowsAffected()
++				if err != nil {
++					txApp.Logger().Debug("Unable to fetch affected rows", slog.String("error", err.Error()))
++				} else {
++					totalAffected += n
++				}
+ 			}
+-
++			result.AffectedRows = totalAffected
+ 			return nil
+ 		})
+ 		if txErr != nil {
+diff --git a/core/app.go b/core/app.go
+index 1bbec9c..9d4e22c 100644
+--- a/core/app.go
++++ b/core/app.go
+@@ -61,6 +61,10 @@ type App interface {
+ 	// (closing db connections, stopping cron ticker, etc.).
+ 	ResetBootstrapState() error
+ 
++	// SetSkipSystemMigrations controls whether system schema migrations
++	// are skipped during the next Bootstrap call.
++	SetSkipSystemMigrations(skip bool)
++
+ 	// DataDir returns the app data directory path.
+ 	DataDir() string
+ 
+@@ -486,7 +490,7 @@ type App interface {
+ 	// If oldCollection is null, then only newCollection is used to create the record table.
+ 	//
+ 	// This method is automatically invoked as part of a collection create/update/delete operation.
+-	SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection) error
++	SyncRecordTableSchema(newCollection *Collection, oldCollection *Collection, oldCollectionTableExists ...bool) error
+ 
+ 	// ---------------------------------------------------------------
+ 
+diff --git a/core/base.go b/core/base.go
+index 3d0f41c..3ee8645 100644
+--- a/core/base.go
++++ b/core/base.go
+@@ -60,15 +60,16 @@ type DBConnectFunc func(dbPath string) (*dbx.DB, error)
+ 
+ // BaseAppConfig defines a BaseApp configuration option
+ type BaseAppConfig struct {
+-	DBConnect        DBConnectFunc
+-	DataDir          string
+-	EncryptionEnv    string
+-	QueryTimeout     time.Duration
+-	DataMaxOpenConns int
+-	DataMaxIdleConns int
+-	AuxMaxOpenConns  int
+-	AuxMaxIdleConns  int
+-	IsDev            bool
++	DBConnect            DBConnectFunc
++	DataDir              string
++	EncryptionEnv        string
++	QueryTimeout         time.Duration
++	DataMaxOpenConns     int
++	DataMaxIdleConns     int
++	AuxMaxOpenConns      int
++	AuxMaxIdleConns      int
++	IsDev                bool
++	SkipSystemMigrations bool
+ }
+ 
+ // ensures that the BaseApp implements the App interface.
+@@ -417,8 +418,10 @@ func (app *BaseApp) Bootstrap() error {
+ 		}
+ 
+ 		// ensure that data dir exist
+-		if err := os.MkdirAll(app.DataDir(), os.ModePerm); err != nil {
+-			return err
++		if runtime.GOOS != "js" {
++			if err := os.MkdirAll(app.DataDir(), os.ModePerm); err != nil {
++				return err
++			}
+ 		}
+ 
+ 		if err := app.initDataDB(); err != nil {
+@@ -433,8 +436,10 @@ func (app *BaseApp) Bootstrap() error {
+ 			return err
+ 		}
+ 
+-		if err := app.RunSystemMigrations(); err != nil {
+-			return err
++		if !app.config.SkipSystemMigrations {
++			if err := app.RunSystemMigrations(); err != nil {
++				return err
++			}
+ 		}
+ 
+ 		if err := app.ReloadCachedCollections(); err != nil {
+@@ -731,7 +736,9 @@ func (app *BaseApp) NewMailClient() mailer.Mailer {
+ // NB! Make sure to call Close() on the returned result
+ // after you are done working with it.
+ func (app *BaseApp) NewFilesystem() (fsys *filesystem.System, err error) {
+-	if app.settings != nil && app.settings.S3.Enabled {
++	if NewWasmFilesystem != nil {
++		fsys, err = NewWasmFilesystem()
++	} else if app.settings != nil && app.settings.S3.Enabled {
+ 		// S3
+ 		fsys, err = filesystem.NewS3(
+ 			app.settings.S3.Bucket,
+@@ -784,6 +791,9 @@ func (app *BaseApp) NewFilesystem() (fsys *filesystem.System, err error) {
+ // NB! Make sure to call Close() on the returned result
+ // after you are done working with it.
+ func (app *BaseApp) NewBackupsFilesystem() (*filesystem.System, error) {
++	if NewWasmBackupsFilesystem != nil {
++		return NewWasmBackupsFilesystem()
++	}
+ 	if app.settings != nil && app.settings.Backups.S3.Enabled {
+ 		return filesystem.NewS3(
+ 			app.settings.Backups.S3.Bucket,
+diff --git a/core/base_wasm.go b/core/base_wasm.go
+new file mode 100644
+index 0000000..d9e6c71
+--- /dev/null
++++ b/core/base_wasm.go
+@@ -0,0 +1,5 @@
++//go:build js && wasm
++
++package core
++
++func (app *BaseApp) registerNotifyWatcherHooks() {}
+diff --git a/core/db_tx.go b/core/db_tx.go
+index 3f08228..9c07a40 100644
+--- a/core/db_tx.go
++++ b/core/db_tx.go
+@@ -22,21 +22,33 @@ func (app *BaseApp) AuxRunInTransaction(fn func(txApp App) error) error {
+ 	return app.runInTransaction(app.AuxNonconcurrentDB(), fn, true)
+ }
+ 
++// RunInTransactionHook is set by adapter packages that need to replace the
++// standard BEGIN/COMMIT/ROLLBACK transaction flow with a platform-specific
++// equivalent. When non-nil, runInTransaction delegates to this hook instead
++// of calling dbx.DB.Transactional. Used by the DO SQLite driver to wrap
++// the transaction callback in ctx.storage.transactionSync().
++var RunInTransactionHook func(app *BaseApp, db *dbx.DB, fn func(txApp App) error, isForAuxDB bool) error
++
+ func (app *BaseApp) runInTransaction(db dbx.Builder, fn func(txApp App) error, isForAuxDB bool) error {
+ 	switch txOrDB := db.(type) {
+ 	case *dbx.Tx:
+ 		// run as part of the already existing transaction
+ 		return fn(app)
+ 	case *dbx.DB:
++		// Platform-specific transaction hook (e.g. DO SQLite's transactionSync).
++		if RunInTransactionHook != nil {
++			return RunInTransactionHook(app, txOrDB, fn, isForAuxDB)
++		}
++
+ 		var txApp *BaseApp
+ 		txErr := txOrDB.Transactional(func(tx *dbx.Tx) error {
+-			txApp = app.createTxApp(tx, isForAuxDB)
++			txApp = app.CreateTxApp(tx, isForAuxDB)
+ 			return fn(txApp)
+ 		})
+ 
+ 		// execute all after event calls on transaction complete
+ 		if txApp != nil && txApp.txInfo != nil {
+-			afterFuncErr := txApp.txInfo.runAfterFuncs(txErr)
++			afterFuncErr := txApp.txInfo.RunAfterFuncs(txErr)
+ 			if afterFuncErr != nil {
+ 				return errors.Join(txErr, afterFuncErr)
+ 			}
+@@ -48,8 +60,10 @@ func (app *BaseApp) runInTransaction(db dbx.Builder, fn func(txApp App) error, i
+ 	}
+ }
+ 
+-// createTxApp shallow clones the current app and assigns a new tx state.
+-func (app *BaseApp) createTxApp(tx *dbx.Tx, isForAuxDB bool) *BaseApp {
++// CreateTxApp shallow clones the current app and assigns a new tx state.
++// Exported for adapter transaction hooks that need to construct a tx app
++// outside the standard dbx.Transactional path.
++func (app *BaseApp) CreateTxApp(tx *dbx.Tx, isForAuxDB bool) *BaseApp {
+ 	clone := *app
+ 
+ 	if isForAuxDB {
+@@ -89,8 +103,9 @@ func (a *TxAppInfo) OnComplete(fn func(txErr error) error) {
+ 	a.afterFuncs = append(a.afterFuncs, fn)
+ }
+ 
+-// note: can be called only once because TxAppInfo is cleared
+-func (a *TxAppInfo) runAfterFuncs(txErr error) error {
++// RunAfterFuncs invokes all registered OnComplete callbacks.
++// Can be called only once because TxAppInfo is cleared afterward.
++func (a *TxAppInfo) RunAfterFuncs(txErr error) error {
+ 	a.mu.Lock()
+ 	defer a.mu.Unlock()
+ 
+diff --git a/core/notify_watcher.go b/core/notify_watcher.go
+index 40d0a16..25f3319 100644
+--- a/core/notify_watcher.go
++++ b/core/notify_watcher.go
+@@ -1,3 +1,5 @@
++//go:build !js
++
+ package core
+ 
+ import (
+diff --git a/core/pocketflare.go b/core/pocketflare.go
+new file mode 100644
+index 0000000..0d331dd
+--- /dev/null
++++ b/core/pocketflare.go
+@@ -0,0 +1,17 @@
++package core
++
++import "github.com/pocketbase/pocketbase/tools/filesystem"
++
++// Platform adapters configure these before Bootstrap; nil keeps upstream behavior.
++var NewWasmFilesystem func() (*filesystem.System, error)
++var NewWasmBackupsFilesystem func() (*filesystem.System, error)
++var RecordDeleteHook func(*RecordEvent) error
++
++// D1BatchMode enables read-before-write adaptations for deferred D1 batches.
++// Native SQLite and Durable Object SQLite leave this disabled.
++var D1BatchMode bool
++
++// SetSkipSystemMigrations allows an interrupted restore to finish before migrations.
++func (app *BaseApp) SetSkipSystemMigrations(skip bool) {
++	app.config.SkipSystemMigrations = skip
++}
+diff --git a/core/record_model.go b/core/record_model.go
+index b27b520..439c2c5 100644
+--- a/core/record_model.go
++++ b/core/record_model.go
+@@ -1485,6 +1485,10 @@ func onRecordSaveExecute(e *RecordEvent) error {
+ }
+ 
+ func onRecordDeleteExecute(e *RecordEvent) error {
++	if RecordDeleteHook != nil {
++		return RecordDeleteHook(e)
++	}
++
+ 	// fetch rel references (if any)
+ 	//
+ 	// note: the select is outside of the transaction to minimize
+diff --git a/tools/cron/cron.go b/tools/cron/cron.go
+index 387da7c..d5383f8 100644
+--- a/tools/cron/cron.go
++++ b/tools/cron/cron.go
+@@ -215,6 +215,13 @@ func (c *Cron) HasStarted() bool {
+ 	return c.ticker != nil
+ }
+ 
++// RunDue runs all registered jobs that are scheduled for the provided time.
++//
++// Exposed for external cron trigger integrations (e.g. Cloudflare Workers Cron Triggers).
++func (c *Cron) RunDue(t time.Time) {
++	c.runDue(t)
++}
++
+ // runDue runs all registered jobs that are scheduled for the provided time.
+ func (c *Cron) runDue(t time.Time) {
+ 	c.mux.RLock()
+diff --git a/tools/filesystem/pocketflare.go b/tools/filesystem/pocketflare.go
+new file mode 100644
+index 0000000..217e579
+--- /dev/null
++++ b/tools/filesystem/pocketflare.go
+@@ -0,0 +1,11 @@
++package filesystem
++
++import (
++	"context"
++	"github.com/pocketbase/pocketbase/tools/filesystem/blob"
++)
++
++// NewBlob creates a filesystem using an externally supplied storage driver.
++func NewBlob(drv blob.Driver) *System {
++	return &System{ctx: context.Background(), bucket: blob.NewBucket(drv)}
++}
+diff --git a/tools/router/rereadable_read_closer.go b/tools/router/rereadable_read_closer.go
+index 25ce758..f798078 100644
+--- a/tools/router/rereadable_read_closer.go
++++ b/tools/router/rereadable_read_closer.go
+@@ -69,8 +69,10 @@ func (r *RereadableReadCloser) Reread() {
+ 	}
+ 
+ 	// eagerly close the old reader to prevent accumulating too much memory or temp files
+-	if err := r.ReadCloser.Close(); err != nil {
+-		r.closeErrors = append(r.closeErrors, err)
++	if r.ReadCloser != nil {
++		if err := r.ReadCloser.Close(); err != nil {
++			r.closeErrors = append(r.closeErrors, err)
++		}
+ 	}
+ 
+ 	r.ReadCloser = r.copy
+@@ -88,8 +90,10 @@ func (r *RereadableReadCloser) Close() error {
+ 		}
+ 	}
+ 
+-	if err := r.ReadCloser.Close(); err != nil {
+-		r.closeErrors = append(r.closeErrors, err)
++	if r.ReadCloser != nil {
++		if err := r.ReadCloser.Close(); err != nil {
++			r.closeErrors = append(r.closeErrors, err)
++		}
+ 	}
+ 
+ 	return errors.Join(r.closeErrors...)

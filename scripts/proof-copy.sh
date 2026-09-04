@@ -79,7 +79,7 @@ start_wrangler() {
 	shift
 
 	cd "$ROOT"
-	local cmd=(pnpm exec wrangler dev --port 0)
+	local cmd=("$ROOT/node_modules/.bin/wrangler" dev --port 0)
 	if [[ -n "$WRANGLER_CONFIG" ]]; then
 		cmd+=(--config "$WRANGLER_CONFIG")
 	fi

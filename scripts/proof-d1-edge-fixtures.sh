@@ -245,7 +245,7 @@ cd "$ROOT"
 make build > "$ARTIFACT_DIR/build.log" 2>&1
 green "  build complete"
 
-pnpm exec wrangler dev --port 0 --persist-to "$STATE_DIR" \
+"$ROOT/node_modules/.bin/wrangler" dev --port 0 --persist-to "$STATE_DIR" \
 	--var POCKETFLARE_ADMIN_EMAIL:"$ADMIN_EMAIL" \
 	--var POCKETFLARE_ADMIN_PASSWORD:"$ADMIN_PASSWORD" \
 	> "$ARTIFACT_DIR/dev.log" 2>&1 &
@@ -407,7 +407,8 @@ echo "── 3. Collection import with interdependent views ──"
 BASE_CREATE="$(jq -n --arg name "$BASE_COLL" '
 	{name:$name,type:"base",fields:[
 		{name:"title",type:"text",required:true},
-		{name:"kind",type:"text",required:true}
+		{name:"kind",type:"text",required:true},
+		{name:"count",type:"number"}
 	]}
 ')"
 BASE_RESP="$ARTIFACT_DIR/base-create.json"
@@ -423,12 +424,12 @@ IMPORT_BODY="$(jq -n --arg base "$BASE_COLL" --arg view1 "$VIEW1_COLL" --arg vie
 			{
 				name: $view1,
 				type: "view",
-				viewQuery: ("select id, title, kind from `" + $base + "` where kind = '\''keep'\''")
+				viewQuery: ("select id, title, kind, count from `" + $base + "` where kind = '\''keep'\''")
 			},
 			{
 				name: $view2,
 				type: "view",
-				viewQuery: ("select id, title, kind from `" + $view1 + "` where kind = '\''keep'\''")
+				viewQuery: ("select id, title, kind, count from `" + $view1 + "` where kind = '\''keep'\''")
 			}
 		]
 	}
@@ -466,6 +467,10 @@ curl -sS --max-time 30 -D "$VIEW2_SCHEMA_HEADERS" -o "$VIEW2_SCHEMA" \
 assert "view2 collection resolves after import" '[ "$(resp_status "$VIEW2_SCHEMA_HEADERS")" = "200" ]'
 VIEW2_TYPE="$(json_get '.type' "$VIEW2_SCHEMA")"
 assert "view2 collection type is view" '[ "$VIEW2_TYPE" = "view" ]'
+VIEW2_COUNT_TYPE=$(jq -r '.fields[] | select(.name == "count") | .type' "$VIEW2_SCHEMA")
+assert "imported view retains numeric source field type" '[ "$VIEW2_COUNT_TYPE" = "number" ]'
+TEMP_VIEWS=$(sql_request temp-view-cleanup "SELECT count(*) FROM sqlite_master WHERE name GLOB '_temp_*'")
+assert "view inspection leaves no temporary schema objects" '[ "$(jq -r ".rows[0][0]" "$TEMP_VIEWS")" = "0" ]'
 
 echo ""
 echo "========================================="

@@ -8,7 +8,7 @@
 # Usage:
 #   ./scripts/proof-restore-cli.sh
 #
-# Requires: wrangler, jq, curl, node, admin UI deps (for JSZip/sql.js)
+# Requires: wrangler, jq, curl, node, Pocketflare deps (for JSZip/sql.js)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -76,10 +76,10 @@ ensure_fixtures() {
 }
 
 ensure_deps() {
-    if [[ ! -f "$ROOT/internal/pocketbase/ui/node_modules/jszip/dist/jszip.min.js" ]]; then
-        echo "Installing admin UI deps..."
-        (cd "$ROOT/internal/pocketbase/ui" && pnpm install) || {
-            red "Failed to install admin UI deps"
+    if [[ ! -f "$ROOT/node_modules/jszip/dist/jszip.min.js" ]]; then
+        echo "Installing Pocketflare deps..."
+        (cd "$ROOT" && pnpm install --frozen-lockfile) || {
+            red "Failed to install Pocketflare deps"
             exit 1
         }
     fi
@@ -94,7 +94,7 @@ start_wrangler() {
     stop_wrangler
     echo "-- Starting wrangler dev ($lane) --"
     cd "$ROOT"
-    pnpm exec wrangler dev --port 0 --persist-to "$state_dir" > "$DEV_LOG" 2>&1 &
+    "$ROOT/node_modules/.bin/wrangler" dev --port 0 --persist-to "$state_dir" > "$DEV_LOG" 2>&1 &
     WRANGLER_PID=$!
 
     local port=""

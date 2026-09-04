@@ -39,7 +39,7 @@ PocketBase's SQLite `.db` file is compatible with DO SQLite's SQL engine.
 
 This imports schema, data, settings, superusers, and local `storage/` files in a single flow.
 
-Manual collection import is not recommended in DO SQLite mode because `PUT /api/collections/import` currently hangs. If you need a manual path, create collections one at a time with `POST /api/collections`, upload files to R2 separately, and verify the result before switching traffic.
+Manual collection import through `PUT /api/collections/import` also works in DO SQLite mode, including chained views. It imports collection definitions only; migrate records and R2 files separately and verify the result before switching traffic.
 
 ### Verification Checklist
 

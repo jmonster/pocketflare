@@ -16,6 +16,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/hook"
 	"github.com/pocketbase/pocketbase/tools/router"
 
+	"github.com/pocketflare/pocketflare/adapter/d1"
 	"github.com/pocketflare/pocketflare/adapter/internal/workerhttp"
 	"github.com/pocketflare/pocketflare/adapter/mail"
 	"github.com/pocketflare/pocketflare/adapter/proof"
@@ -30,7 +31,7 @@ import (
 // use in a Workers fetch handler.
 //
 // Admin UI static assets are served via Cloudflare Workers Assets from
-// admin-ui/_ before WASM boot.
+// dist/admin-ui/_ before WASM boot.
 func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEvent], error) {
 	dbMode := strings.ToLower(strings.TrimSpace(config.DBMode))
 	if dbMode == "" {
@@ -56,9 +57,8 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 		DefaultDev:     false,
 		DefaultDataDir: config.DataDir,
 		DBConnect:      dbConnect,
-		// Keep bootstrap shallow when resuming an active restore.
-		SkipSystemMigrations: restoreOnly,
 	})
+	pb.SetSkipSystemMigrations(restoreOnly)
 
 	// Wire R2-backed filesystem drivers before Bootstrap.
 	storageBucket := config.StorageBucketName
@@ -81,9 +81,12 @@ func New(config Config) (*pocketbase.PocketBase, *router.Router[*core.RequestEve
 	// Configure transaction behavior before Bootstrap because system migrations
 	// run during Bootstrap.
 	core.RunInTransactionHook = nil
-	core.RunMigrationsWithoutTransaction = false
+	core.D1BatchMode = dbMode == "d1"
+	core.RecordDeleteHook = nil
+	apis.PrepareSQLQuery = nil
 	if dbMode == "d1" {
-		core.RunMigrationsWithoutTransaction = true
+		core.RecordDeleteHook = d1.DeleteRecord
+		apis.PrepareSQLQuery = d1.PrepareSQLQuery
 	} else if dbMode == "do_sqlite" {
 		setupDoSqliteMode()
 	}

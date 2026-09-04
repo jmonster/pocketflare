@@ -23,27 +23,22 @@ Pocketflare maps `database/sql` transactions to `D1Database.batch()` for atomic 
 | Batch read-after-write | POST then PATCH in same batch: deterministic 400 with `batch_request_failed`. Zero records persisted. |
 | Query-after-write in any tx | `d1pocketflare: cannot query after queued writes in a D1 batch transaction` |
 
-### Patched (D1-compatible via patches)
+### Adapter and patch responsibilities
 
-**patch 010 (`010-d1-transaction-compat.patch`)**
+The three patches are described in [the patch manifest](../patches/MANIFEST.md).
+Pocketflare-owned implementations stay in the adapter or the admin extension.
 
-| Feature | Fix |
+| Feature | Implementation |
 |---|---|
-| Collection delete with view resave | `checkViewDependencies` scans view queries outside tx (substring heuristic); `resaveViewsWithChangedFields` runs before DROP TABLE within tx |
-| View collection save/update | Precompute fields and normalized query before entering write tx |
-| Collection metadata updates | Precompute old table existence before saving `_collections`, avoiding schema checks after queued writes |
-| Cascade deletes (single-level) | Cascade before main delete; collect all related records across all fields before writes |
-| Raw SQL route (`/api/sql`) | Split multi-statement SQL by `;`, reject mixed read/write |
+| Collection deletion with dependent views | Parse view identifiers before DROP TABLE, avoiding the previous substring check. |
+| View save/update and import | Inspect the proposed schema through an independent D1 connection. Import CTEs resolve pending view dependencies; temporary inspection views are removed after each check. |
+| Collection metadata and field conversions | Read table existence and view definitions before queuing schema writes. Refresh cached collections and dependent views after commit. |
+| Relation cleanup and cascade deletion | `adapter/d1/delete.go` gathers the graph before writing, preserves required/optional/multiple-relation behavior, qualifies record IDs by collection, and advances through paginated results. |
+| SQL console | `adapter/d1/sql.go` splits statements while preserving quotes, comments and trigger bodies, and rejects mixed read/write requests before persistence. |
+| Restore and resume | `ui/extensions.js` registers the restore page through PocketBase's existing extension loader. The UI and CLI share schema selection and preserve user indexes, views and triggers. |
 
-**patch 017 (`017-d1-parity-fixes.patch`)**
-
-| Feature | Fix |
-|---|---|
-| Collection import with view validation | Stores merged collection map in `app.Store()` so `FindCollectionByNameOrId` and `findCollectionsByIdentifiers` resolve from memory; view field creation and validation route reads through parent app to avoid D1 batch. Interdependent view import works in D1 mode (proven by `scripts/proof-d1-edge-fixtures.sh` §3). In DO SQLite mode, `PUT /api/collections/import` hangs (proven by `scripts/proof-do-sqlite-view-chained.sh`); use individual `POST /api/collections` for each view as workaround. |
-| Field type conversions (single↔multiple) | View definitions pre-fetched outside the write transaction and passed to `normalizeSingleVsMultipleFieldChanges`; no more `sqlite_master` query after ALTER TABLE |
-| Recursive/multi-level cascade deletes | BFS traversal carries the target record for each level, so grandchildren are deleted against their parent id rather than the root id; `skipCascadeDelete` prevents re-entrant cascade |
-| SQL route hardening | Rune-based statement splitter respects string literals, blob literals, line comments, and block comments; mixed read/write batches are rejected before a write can run |
-| Restore resume / start-over | UI handles active restore session detection, resume from interrupted phase, and cancel with clear guardrails |
+DO SQLite keeps reads on its active transaction. Both individual view creation
+and importing a base collection with chained views pass the local DO proof.
 
 ### Confirmed D1-compatible (no patch needed)
 
@@ -95,6 +90,9 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 
 ## Proof Matrix
 
+The local critical lanes were rerun against PocketBase v0.40.2. Remote results
+below describe earlier validation and were not rerun for this upgrade.
+
 | Feature | Proof | Mode | Remaining Risk |
 |---|---|---|---|
 | D1 bootstrap (no QAW) | `scripts/proof-d1-bootstrap.sh` | D1 local (wrangler dev) | Cold-start timing varies per deployment |
@@ -107,7 +105,7 @@ This appears in `wrangler tail` output. Use it to identify which PocketBase path
 | Cascade deletes (single-level) | `scripts/e2e-test.sh` §9 (implicit via collection delete) | D1 + DO SQLite remote | None known |
 | Cascade deletes (multi-level) | `scripts/proof-d1-edge-fixtures-remote.sh` §1 | D1 remote (deployed Worker) | None known; 16/16 assertions passed remotely |
 | Collection import with interdependent new views (D1) | `scripts/proof-d1-edge-fixtures.sh` §3 | D1 local (wrangler dev) | Proven: import returns 204, view2 resolves chained dependency correctly. |
-| Collection import with interdependent new views (DO SQLite) | `scripts/proof-do-sqlite-view-chained.sh` | DO SQLite local (wrangler dev) | Import endpoint hangs in DO SQLite mode. Workaround: create views individually via `POST /api/collections`. Chained dependency resolution works. |
+| Collection import with interdependent new views (DO SQLite) | `scripts/proof-do-sqlite-view-chained.sh` | DO SQLite local (wrangler dev) | Individual creation and atomic import of a base collection with two chained views pass locally. |
 | Raw SQL route | `scripts/proof-d1-edge-fixtures-remote.sh` §2 | D1 remote (deployed Worker) | None known; 9/9 assertions passed remotely |
 | Production realtime (DO) | `scripts/proof-realtime-production.sh` | Remote (deployed Worker) | None known; 14/14 assertions passed |
 | Cron in DO SQLite mode | `scripts/proof-cron.sh` (adapted) | Remote (deployed Worker) | None known; RunDue + full scheduled path proven |
@@ -118,12 +116,6 @@ Immutable Cloudflare limits that cannot be worked around in code:
 
 - **D1 interactive transactions**: D1 `batch()` requires all statements upfront; cannot read intermediate results of queued writes. This is fundamental to D1's architecture. Use DO SQLite for read-your-writes semantics.
 - **D1 batch size**: D1 `batch()` has a 100-bound-parameter limit per batch. Restore database import may hit this for tables with many wide rows.
-
-### Known Product Gaps
-
-Features that are not yet implemented or have known bugs:
-
-- **DO SQLite import endpoint**: `PUT /api/collections/import` hangs in DO SQLite mode (proven by `scripts/proof-do-sqlite-view-chained.sh` §12). Workaround: create views individually via `POST /api/collections`.
 
 ## DO SQLite: Full-Compatibility Path
 
