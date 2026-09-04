@@ -1,190 +1,22 @@
-# Pocketflare Agent Notes
+# Pocketflare
 
-## Commands
+## Command Authority
 
-```sh
-./scripts/update-pb.sh       # materialize internal/pocketbase and apply patches
-node scripts/check-pb-version.mjs
-make build                   # compile Go WASM and copy JS runtime files into dist/
-make deploy                  # build, then pnpm exec wrangler deploy
-make dev                     # pnpm exec wrangler dev
-make proof                   # canonical local proof lane (proof-critical is an alias)
-./scripts/scaffold-project.sh
-node scripts/doctor.mjs <url> --token <token>           # deployment health check
-node scripts/backup-verify.mjs <url> --token <token>    # backup readiness check
-```
+- Use `make dev`, `make proof`, `make deploy`, and the scripts under `scripts/` for their named operations.
+- A fresh checkout requires `./scripts/update-pb.sh`. Durable PocketBase changes belong in the patch stack; never edit generated `internal/pocketbase/` as the lasting fix.
 
-## Subagents
+## Production Safety
 
-- Never spawn forked subagents. Do not set `fork_context=true`.
-- When a subagent is explicitly requested, spawn a fresh mini subagent with an explicit mini model and a narrow prompt.
-- Do not rely on inherited or forked context. Put all necessary repo, task, and constraint context in the subagent prompt.
+- Wrangler v4 D1 and R2 commands that target production must include `--remote`. Without it, Wrangler operates on an unrelated local mirror.
+- Production export, import, Time Travel, migration, and backup commands also require `--remote`. Confirm the exact target before any destructive restore or sync.
+- PocketBase backup ZIPs are not complete Pocketflare backups: application SQLite state lives in D1 or Durable Objects and file fields live in R2. Use `docs/production-backups.md` only for backup or recovery work.
 
-## Wrangler `--remote` is ALWAYS required
+## Runtime Boundaries
 
-Wrangler v4 `d1 execute` and `r2 object put` default to **local**. The Worker reads from **remote** D1/R2. Every command that touches production resources must include `--remote`. Local is a dev-only mirror with no connection to the deployed Worker.
+- `worker.mjs` owns the Worker entry point. `APP_DB` and `LOGS_DB` are database bindings; `STORAGE` is PocketBase file storage; `BACKUPS` stores upstream backup artifacts.
+- The R2 adapter implements PocketBase-managed file behavior, not a general POSIX filesystem. Preserve Worker-compatible constraints for custom code.
+- `/_pf` owns first-superuser setup. Bootstrap credentials are temporary and must be removed after setup; never commit credentials.
 
-```sh
-# WRONG — data goes to local, Worker never sees it
-pnpm exec wrangler d1 execute my-app --command="SELECT ..."
-pnpm exec wrangler r2 object put "bucket/key" --file ./local-file
+## Verification
 
-# RIGHT
-pnpm exec wrangler d1 execute my-app --remote --command="SELECT ..."
-pnpm exec wrangler r2 object put "bucket/key" --file ./local-file --remote
-```
-
-**Backup and export commands also require `--remote`:**
-
-```sh
-# D1 export and Time Travel always need --remote
-pnpm exec wrangler d1 export pocketflare-app --remote --output backup.sql
-pnpm exec wrangler d1 time-travel restore pocketflare-app --remote --timestamp "<ts>"
-
-# DO NOT run these commands without --remote — you'll get local data, not production.
-```
-
-**`migrate-files.sh` does NOT add `--remote` automatically.** If you use it for a real migration, either pass `--remote` in the script or upload through the PocketBase API directly (which uses the Worker's R2 binding and always hits remote).
-
-`internal/pocketbase/`, `dist/`, `.wrangler/`, `node_modules/`, `.artifacts/`, `pb_data/`, SQLite files, env files, and local dev vars are intentionally ignored. A fresh clone is not build-ready until `./scripts/update-pb.sh` has run.
-
-## Runtime Shape
-
-`worker.mjs` is the Worker entry point. `/_pf` is the first-run setup route; it boots the runtime only to redirect an empty database to PocketBase's tokenized first-superuser installer. `/_` and nested `/_/*` admin static assets stay on Cloudflare Workers Assets before WASM boots. Dynamic API traffic uses a lazy singleton Go/PocketBase runtime per Worker isolate. This avoids concurrent browser asset fan-out creating multiple large Go WASM heaps in one isolate.
-
-Go entrypoint: `cmd/pocketflare/main.go`
-
-Adapter: `adapter.New(config)` wires:
-- D1 `APP_DB` for PocketBase data.
-- D1 `LOGS_DB` for PocketBase auxiliary/log data.
-- R2 `STORAGE` for PocketBase file storage.
-- R2 `BACKUPS` for upstream PocketBase backup zip artifacts, not complete Pocketflare data backups.
-- Workers Assets `ASSETS` for the checked-in admin UI at `admin-ui/_`.
-
-Do not route admin static assets through Go/WASM. `/_pf` owns installer discovery; `/_` and nested static admin requests should stay on Workers Assets.
-
-`testapp/` is a minimal custom-hook example project used by the scaffold/template path. Treat generated binaries under it as ignored build output.
-
-## Configuration
-
-Runtime env vars:
-- `POCKETFLARE_APP_URL`: optional default app URL for new databases only.
-- `POCKETFLARE_ADMIN_EMAIL`: optional headless initial superuser email.
-- `POCKETFLARE_ADMIN_PASSWORD`: optional headless initial superuser password.
-- `POCKETFLARE_MAIL_PROVIDER`: optional mail transport (resend|postmark|sendgrid|mailgun|smtp|webhook).
-- `POCKETFLARE_MAIL_API_KEY`: optional API key for HTTP mail providers.
-- `POCKETFLARE_MAIL_DOMAIN`: optional Mailgun sending domain.
-- `POCKETFLARE_MAIL_WEBHOOK_URL`: optional HTTPS mail webhook (legacy).
-- `POCKETFLARE_MAIL_WEBHOOK_TOKEN`: optional bearer token for the mail webhook.
-- `R2_ACCESS_KEY_ID`: reserved; server-side CopyObject is disabled after deployed Worker E2E rejected R2 S3 endpoint fetches before HTTP.
-- `R2_SECRET_ACCESS_KEY`: reserved; server-side CopyObject is disabled.
-- `R2_ACCOUNT_ID`: reserved; server-side CopyObject is disabled.
-
-`adapter.New` applies `POCKETFLARE_APP_URL` and trusted proxy header defaults before `Bootstrap()`. PocketBase persists those only when no `_params/settings` row exists, so migrated and already-deployed projects keep their stored settings. New databases default `TrustedProxy.Headers` to `["CF-Connecting-IP"]`.
-
-Normal new-project admin setup should use Pocketflare's `/_pf` route, which redirects to PocketBase's first-access installer when no superuser exists. The `POCKETFLARE_ADMIN_*` env path exists only for headless bootstrap and should be removed after the first successful boot. Do not commit credentials. `wrangler.toml` may contain non-secret resource names/IDs.
-
-## Cloudflare Bindings
-
-`STORAGE` and `BACKUPS` are live R2 bindings. The WASM PocketBase filesystem path is patched to call the injected R2 filesystem constructors instead of the upstream local/S3 path.
-
-That adapter covers PocketBase-managed file fields and PocketBase filesystem calls. It is not a general writable POSIX filesystem for custom Go code. Direct `os.*`, fsnotify, subprocess, and raw socket assumptions need Worker-compatible replacements.
-
-PocketBase backups are not complete Pocketflare production backups. Upstream backup creation archives the local `pb_data` directory, but Pocketflare stores app data in D1 or DO SQLite and file fields in R2. If backup creation or auto backups are enabled, the zip artifact is stored in `BACKUPS`, but ongoing production backups should use Cloudflare-native primitives: D1 Time Travel/export and separate `STORAGE` R2 bucket backup/copy. PocketBase backup zips can be restored into an empty Pocketflare target from the admin UI or `scripts/restore-backup.mjs` as a migration path from standalone PocketBase. See `docs/production-backups.md` for the full backup strategy, recovery paths, and support matrix. Verify backup bindings with `node scripts/backup-verify.mjs <url> --token <token>`.
-
-Standard PocketBase file uploads/downloads still go through the PocketBase API. Enabling upstream S3 settings is not a direct-upload feature. Direct R2 uploads or signed download redirects need explicit Pocketflare routes that preserve access rules.
-
-`adapter/r2blob` upload writes use a chunked R2 multipart writer: buffer up to one part in Go, upload it, release it. This is bounded-memory pseudo-streaming, not direct browser-to-R2 upload. Filesystem Copy is separate: it only runs when PocketBase calls `Copy(src, dst)` to duplicate an existing object. Copy uses the streaming relay fallback and is runtime-proven up to 20 MiB. Server-side S3 `CopyObject` is disabled because deployed Worker E2E rejected both R2 S3 endpoint URL forms before HTTP.
-
-Migration docs for local and existing S3-backed PocketBase storage live in `docs/storage-migration.md`. Pocketflare expects R2 object keys under `storage/<collectionId>/<recordId>/<filename>`.
-
-`ASSETS` is the Workers Assets binding declared in `wrangler.toml`:
-
-```toml
-[assets]
-directory = "./admin-ui"
-binding = "ASSETS"
-```
-
-Cloudflare's default static-asset routing can serve matching files without Worker code. `worker.mjs` explicitly calls `env.ASSETS.fetch(req)` for admin paths as a no-rewrite fallback; installer discovery is isolated to `/_pf`.
-
-## PocketBase Patch Set
-
-Managed by `scripts/update-pb.sh` against PocketBase v0.39.1. 18 patches. See [patches/MANIFEST.md](patches/MANIFEST.md) for the full manifest.
-
-**Upstream?** column: Yes = could be proposed to PocketBase (no platform assumptions). No = Pocketflare-specific platform constraint. Partial = mix of both.
-
-Keep durable source edits in this checkout. Do not edit generated `internal/pocketbase/` as the lasting fix; edit patches and rerun `scripts/update-pb.sh`.
-
-## Updating PocketBase
-
-Before bumping PocketBase, run `node scripts/check-pb-version.mjs` and update the default version in `scripts/update-pb.sh`.
-
-Use a fresh upstream clone under `.artifacts/` to replay every patch against the new tag before touching the durable generated tree. A good proof lane is:
-
-```sh
-rm -rf .artifacts/pb-apply
-git clone --depth 1 --branch vX.Y.Z https://github.com/pocketbase/pocketbase.git .artifacts/pb-apply
-cd .artifacts/pb-apply
-for patch in ../../patches/*.patch; do git apply "$patch"; done
-```
-
-Only after the patch stack applies cleanly should `internal/pocketbase/` be replaced or regenerated. Preserve the previous generated tree under `.artifacts/` if it helps compare behavior; do not edit it as durable source.
-
-Patch notes from the v0.39.1 bump:
-- Upstream added `core/notify_watcher.go`; the WASM patch must build-tag that file out and provide `notify_watcher_wasm.go`, not duplicate `registerNotifyWatcherHooks` in `base_wasm.go`.
-- The admin UI is JS modules in `ui/src`, not the older Svelte layout. Patch `ui/src/...`, run `pnpm install` and `pnpm run build` from `internal/pocketbase/ui`, then sync `ui/dist/` into `admin-ui/_`.
-- If any branding or feature patch adds binary assets (e.g. `ui/public/images/logo.png` in 008, `ui/public/assets/sql-wasm-browser.wasm` in 015), regenerate it with `git diff --binary` and verify the patch applies from a fresh clone. Do not run blanket whitespace cleanup over binary patch hunks; it can corrupt the `GIT binary patch` terminator.
-- Regenerate admin UI patches from `internal/pocketbase` with `git -C internal/pocketbase diff --binary -- <paths>`. Untracked new files need an explicit binary add hunk.
-- Treat `git diff --check` failures inside `.patch` fixtures carefully. It is acceptable to run `git diff --check -- ':!patches/*.patch'` if the patch fixture itself must preserve upstream or binary-patch formatting.
-
-After replaying patches and rebuilding generated assets, run the narrow proofs:
-- `make build`
-- `node scripts/check-pb-version.mjs`
-- fresh patch replay from `.artifacts/`
-- `pnpm exec wrangler deploy --dry-run --outdir .artifacts/deploy-dry-run`
-
-## D1 Transaction Constraint
-
-D1 uses batch transactions with specific read/write ordering constraints. See [D1 Compatibility](docs/D1-COMPATIBILITY.md) for the full matrix, diagnostics, and proof coverage.
-
-## D1 Data Import (migrating from SQLite PocketBase)
-
-When importing an existing PocketBase database into D1:
-
-**Always use `--remote`.** Wrangler v4 `d1 execute` defaults to local. Imports, schema changes, and queries against the Worker's database must use `--remote`. The Worker reads from remote D1; local is a dev-only mirror.
-
-**D1 replication delay.** After DDL changes (DROP TABLE, CREATE TABLE), wait 30–60 seconds before letting the Worker boot against the new schema. D1 replicas lag behind the primary and the Worker will see stale state.
-
-**Bootstrap strategy.** The safest migration path is:
-1. Start with empty D1 databases
-2. Let Pocketflare bootstrap PocketBase (creates system tables with the current version's schema)
-3. Import only app/user data on top — NOT system tables (`_params`, `_collections`, `_migrations`, `_superusers`, `_authOrigins`, `_externalAuths`, `_mfas`, `_otps`)
-4. Import app-specific `_collections` entries (skip the system ones PocketBase already created)
-5. Recreate SQL VIEWs — PocketBase public views are views, not tables
-6. Patch `_params/settings` with target environment values
-7. Import `_logs` to LOGS_DB
-
-The `_migrations` table from an older PocketBase version has entries that the current version's migration runner may not match exactly. Bootstrapping clean avoids replaying old system migrations against already-imported system tables.
-
-**Password hashes are portable.** PocketBase uses standard `$2a$10$` bcrypt. Hashes from any PocketBase version work in any other. The auth token signing key is generated fresh during bootstrap — existing JWT tokens are invalidated, but users can log in again with their same password. Superusers should be created fresh via `POCKETFLARE_ADMIN_EMAIL`/`POCKETFLARE_ADMIN_PASSWORD` env vars or the `/_pf` installer flow.
-
-**Schema drift from JS migrations.** If the old PocketBase had custom `pb_migrations/*.js` that added columns (e.g. `users.disclaimer_agreed`), those columns must be added via ALTER TABLE before importing user data. PocketBase v0.39 creates tables with its own schema, which won't include columns added by old JS migrations.
-
-**Views, not tables.** PocketBase creates public sharing collections (e.g. `pool_share_public`) as SQL VIEWs. If a migration script creates them as tables, drop and recreate as views from the source schema dump.
-
-**`migrate-data.sh` includes `_migrations` by default.** Pass `--exclude-migrations` for clean imports where you want PocketBase to run migrations fresh.
-
-## Validation
-
-Use the narrowest proof that exercises the touched surface:
-- Go/runtime changes: `make build`.
-- Worker packaging/config: `pnpm exec wrangler deploy --dry-run --outdir .artifacts/deploy-dry-run`.
-- Script syntax: `bash -n scripts/<name>.sh`.
-- Admin asset regression: concurrent requests to nested `/_/...` static assets should return from Workers Assets and not boot WASM.
-
-Do not run broad suites unless requested. Do not rerun failures without diagnosing the mechanism.
-
-## Email
-
-Pocketflare replaces PocketBase's built-in SMTP with Workers-compatible transports. See [Email Implementation](docs/email-implementation.md) for provider details and configuration.
+- Use the narrowest existing proof for the changed boundary. PocketBase upgrades, D1 imports, storage migrations, email, deploys, and recovery are separate operational tasks and do not run automatically.
