@@ -1,6 +1,6 @@
 # Pocketflare patches
 
-Target: **PocketBase v0.40.2**. Apply these patches in filename order with
+Target: **PocketBase v0.40.4**. Apply these patches in filename order with
 `./scripts/update-pb.sh`; implementations that do not need private PocketBase
 internals live in this repository.
 

@@ -20,7 +20,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ARTIFACT_DIR="$ROOT/.artifacts/proof-realtime-$(date +%Y%m%dT%H%M%S)"
-mkdir -p "$ARTIFACT_DIR"
+# Never share a developer's database or a previous proof's restored credentials.
+STATE_DIR="$ARTIFACT_DIR/wrangler-state"
+mkdir -p "$ARTIFACT_DIR" "$STATE_DIR"
 
 PASS=0
 FAIL=0
@@ -130,7 +132,7 @@ green "  wrangler.proof-realtime.toml created"
 
 # ── 3. Start wrangler dev ──
 echo "── 3. Starting wrangler dev ──"
-"$ROOT/node_modules/.bin/wrangler" dev --port 0 --config wrangler.proof-realtime.toml --var POCKETFLARE_REALTIME_WORKER_BRIDGE:1 > "$ARTIFACT_DIR/dev.log" 2>&1 &
+"$ROOT/node_modules/.bin/wrangler" dev --port 0 --persist-to "$STATE_DIR" --config wrangler.proof-realtime.toml --var POCKETFLARE_REALTIME_WORKER_BRIDGE:1 > "$ARTIFACT_DIR/dev.log" 2>&1 &
 WRANGLER_PID=$!
 
 BASE=""

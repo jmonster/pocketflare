@@ -100,11 +100,11 @@ index 47cabc7..6b71bd9 100644
  		})
  		if txErr != nil {
 diff --git a/core/app.go b/core/app.go
-index 1bbec9c..9d4e22c 100644
+index 05c2276..9d4e22c 100644
 --- a/core/app.go
 +++ b/core/app.go
-@@ -61,6 +61,10 @@ type App interface {
- 	// (closing db connections, stopping cron ticker, etc.).
+@@ -66,6 +66,10 @@ type App interface {
+ 	// Deprecated: use ClearBootstrap().
  	ResetBootstrapState() error
  
 +	// SetSkipSystemMigrations controls whether system schema migrations

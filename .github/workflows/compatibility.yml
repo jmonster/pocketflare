@@ -1,0 +1,54 @@
+name: PocketBase compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compatibility-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-proofs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: 'true'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Materialize patched PocketBase
+        run: ./scripts/update-pb.sh
+      - name: Adapter and updater regressions
+        run: |
+          go test ./adapter/d1 ./adapter/internal/workerhttp ./adapter/mail
+          GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./adapter/internal/jsutil
+          node --test tests/update-pb.test.mjs
+      - name: Canonical local compatibility proofs
+        run: make proof
+      - name: Require committed dependency metadata
+        run: git diff --exit-code -- go.mod go.sum pnpm-lock.yaml
+      - name: Preserve proof logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
