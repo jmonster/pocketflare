@@ -6,12 +6,17 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      pocketbase-version:
+        description: Optional upstream candidate to test in this disposable checkout
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: compatibility-${{ github.workflow }}-${{ github.ref }}
+  group: compatibility-${{ github.workflow }}-${{ github.ref }}-${{ inputs.pocketbase-version }}
   cancel-in-progress: true
 
 jobs:
@@ -32,14 +37,32 @@ jobs:
           node-version: '22'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Select upstream candidate only in the disposable checkout
+        if: inputs.pocketbase-version != ''
+        env:
+          POCKETBASE_VERSION: ${{ inputs.pocketbase-version }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const version = process.env.POCKETBASE_VERSION;
+          if (!/^v\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid upstream version');
+          const file = 'scripts/update-pb.sh';
+          const source = readFileSync(file, 'utf8');
+          const pattern = /VERSION="\$\{1:-v\d+\.\d+\.\d+\}"/g;
+          if ([...source.matchAll(pattern)].length !== 1) throw new Error('Missing or ambiguous upstream pin');
+          writeFileSync(file, source.replace(pattern, `VERSION="\${1:-${version}}"`));
+          console.log(`Testing PocketBase candidate ${version}; no repository ref is changed.`);
+          NODE
       - name: Materialize patched PocketBase
         run: ./scripts/update-pb.sh
       - name: Adapter and updater regressions
         run: |
           go test ./adapter/d1 ./adapter/internal/workerhttp ./adapter/mail
           GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./adapter/internal/jsutil
-          node --test tests/update-pb.test.mjs
+          node --test tests/update-pb.test.mjs tests/check-pb-version.test.mjs
       - name: Canonical local compatibility proofs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: make proof
       - name: Require committed dependency metadata
         run: git diff --exit-code -- go.mod go.sum pnpm-lock.yaml
@@ -47,7 +70,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          name: compatibility-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.pocketbase-version || 'pinned' }}
           path: .artifacts/**/*.log
           include-hidden-files: true
           if-no-files-found: ignore

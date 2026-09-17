@@ -1,0 +1,57 @@
+name: PocketBase upstream
+
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/pocketbase-upstream.yml'
+      - '.github/workflows/compatibility.yml'
+      - 'scripts/check-pb-version.mjs'
+      - 'tests/check-pb-version.test.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pocketbase-upstream-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      latest: ${{ steps.versions.outputs.latest }}
+      pinned: ${{ steps.versions.outputs.pinned }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/check-pb-version.test.mjs
+      - name: Resolve stable release and current pin
+        id: versions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest=$(node scripts/check-pb-version.mjs --latest)
+          pinned=$(sed -n 's/^VERSION="${1:-\([^}]*\)}"/\1/p' scripts/update-pb.sh)
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          printf 'Pinned PocketBase: `%s`\n\nLatest stable PocketBase: `%s`\n' "$pinned" "$latest" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail visibly when the pin falls behind
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-pb-version.mjs
+
+  latest-compatibility:
+    needs: release
+    # A stale pin must not prevent testing the candidate. Skip the expensive
+    # daily repeat when the pin is current; PRs/manual runs exercise this lane.
+    if: ${{ !cancelled() && needs.release.outputs.latest != '' && (github.event_name != 'schedule' || needs.release.outputs.latest != needs.release.outputs.pinned) }}
+    uses: ./.github/workflows/compatibility.yml
+    with:
+      pocketbase-version: ${{ needs.release.outputs.latest }}
