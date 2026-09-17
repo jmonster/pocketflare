@@ -36,7 +36,7 @@ jobs:
         run: ./scripts/update-pb.sh
       - name: Adapter and updater regressions
         run: |
-          go test ./adapter/...
+          go test ./adapter/d1 ./adapter/internal/workerhttp ./adapter/mail
           GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./adapter/internal/jsutil
           node --test tests/update-pb.test.mjs
       - name: Canonical local compatibility proofs
@@ -49,5 +49,6 @@ jobs:
         with:
           name: compatibility-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/**/*.log
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

@@ -12,7 +12,7 @@ Pocketflare runs [PocketBase] on Cloudflare Workers and includes:
 - the familiar [PocketBase] Admin dashboard UI, served through Workers Assets
 - the simple REST-ish [PocketBase] API, running as Go WASM on Cloudflare Workers
 
-Pocketflare is a [PocketBase] port for Cloudflare. It targets **PocketBase v0.40.2** with three focused [upstream patches](patches/MANIFEST.md); the admin UI uses PocketBase's existing extension loader.
+Pocketflare is a [PocketBase] port for Cloudflare. It targets the release pinned in [`scripts/update-pb.sh`](scripts/update-pb.sh) with three focused [upstream patches](patches/MANIFEST.md); the admin UI uses PocketBase's existing extension loader.
 
 ## Compatibility Model
 
@@ -240,7 +240,7 @@ pnpm exec wrangler d1 execute APP_DB --remote --file .artifacts/pocketbase-to-d1
 WRANGLER_R2_BUCKET=<storage-bucket> ./scripts/migrate-files.sh /path/to/pb_data/storage --execute
 ```
 
-For existing S3-backed [PocketBase] apps, copy the existing `storage/` prefix from the source bucket into the Pocketflare R2 `STORAGE` bucket. See `docs/storage-migration.md`.
+For existing S3-backed [PocketBase] apps, copy the existing `storage/` prefix into Pocketflare's R2 `STORAGE` bucket. See `docs/storage-migration.md`.
 
 5. Deploy:
 
