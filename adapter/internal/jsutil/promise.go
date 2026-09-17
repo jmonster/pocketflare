@@ -9,33 +9,45 @@ import (
 	"syscall/js"
 )
 
-// AwaitPromise blocks on a JavaScript Promise and returns its result or error.
+// AwaitPromise blocks on a native JavaScript Promise and returns its result or error.
 // If ctx expires before the Promise settles, AwaitPromise returns ctx.Err().
-// Both js.Func values are guaranteed released on return regardless of which
-// callback fires (or if neither fires due to ctx expiry).
+// Cancellation stops the wait, not the underlying operation: both callbacks stay
+// valid until settlement, then release each other. A Promise that never settles
+// retains its callbacks, so callers must use operations with bounded lifetimes.
 func AwaitPromise(ctx context.Context, promise js.Value) (js.Value, error) {
-	// Buffered so late-settling Promises don't block the JS goroutine.
-	resultCh := make(chan js.Value, 1)
-	errCh := make(chan error, 1)
+	type result struct {
+		value js.Value
+		err   error
+	}
+	// Buffered so late settlement after cancellation cannot block the JS goroutine.
+	resultCh := make(chan result, 1)
 
-	then := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		resultCh <- args[0]
+	var then, catch js.Func
+	release := func() {
+		then.Release()
+		catch.Release()
+	}
+	then = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer release()
+		resultCh <- result{value: args[0]}
 		return js.Undefined()
 	})
-	catch := js.FuncOf(func(_ js.Value, args []js.Value) any {
-		errCh <- fmt.Errorf("promise rejected: %s", args[0].Call("toString").String())
+	catch = js.FuncOf(func(_ js.Value, args []js.Value) any {
+		defer release()
+		// Promise rejection reasons need not be Error objects (or even objects).
+		message := js.Global().Get("String").Invoke(args[0]).String()
+		resultCh <- result{value: js.Undefined(), err: fmt.Errorf("promise rejected: %s", message)}
 		return js.Undefined()
 	})
-	defer then.Release()
-	defer catch.Release()
 
-	promise.Call("then", then).Call("catch", catch)
+	// One reaction pair avoids an extra chained Promise and JS bridge call.
+	// Always attach both handlers, even if ctx is already canceled, so a later
+	// rejection of the already-started operation is still handled.
+	promise.Call("then", then, catch)
 
 	select {
-	case result := <-resultCh:
-		return result, nil
-	case err := <-errCh:
-		return js.Undefined(), err
+	case r := <-resultCh:
+		return r.value, r.err
 	case <-ctx.Done():
 		return js.Undefined(), ctx.Err()
 	}

@@ -35,6 +35,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Materialize patched PocketBase
         run: ./scripts/update-pb.sh
+      - name: Test Go/JS Promise bridge
+        run: GOOS=js GOARCH=wasm go test -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./adapter/internal/jsutil
       - name: Build
         run: make build
 
