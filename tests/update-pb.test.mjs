@@ -194,3 +194,44 @@ exec "${realMv}" "$@"
     f.cleanStaging();
   });
 }
+
+test("successful upgrades preserve stashes, local branches, and Git configuration", t => {
+  const f = fixture(t);
+  f.seed();
+  f.git(f.pb, "switch", "-c", "local-work");
+  writeFileSync(path.join(f.pb, "local.txt"), "committed local work\n");
+  f.git(f.pb, "add", "local.txt");
+  f.git(f.pb, "commit", "-qm", "local work");
+  const localCommit = f.git(f.pb, "rev-parse", "HEAD");
+  writeFileSync(path.join(f.pb, "local.txt"), "stashed local work\n");
+  f.git(f.pb, "stash", "push", "-m", "keep this stash");
+  const stash = f.git(f.pb, "rev-parse", "refs/stash");
+  f.git(f.pb, "config", "pocketflare.test", "keep this setting");
+  f.patch("001.patch", "next base", "upgraded");
+  succeeded(f.run("v0.41.0"));
+  assert.equal(f.git(f.pb, "rev-parse", "local-work"), localCommit);
+  assert.equal(f.git(f.pb, "show", "local-work:local.txt"), "committed local work");
+  assert.equal(f.git(f.pb, "rev-parse", "refs/stash"), stash);
+  assert.equal(f.git(f.pb, "show", "stash:local.txt"), "stashed local work");
+  assert.equal(f.git(f.pb, "config", "pocketflare.test"), "keep this setting");
+  assert.equal(readFileSync(path.join(f.pb, "value.txt"), "utf8"), "upgraded\n");
+  f.cleanStaging();
+});
+
+test("refuses a symlinked Git directory without modifying its target", t => {
+  const f = fixture(t);
+  mkdirSync(f.pb, { recursive: true });
+  symlinkSync(path.join(f.upstream, ".git"), path.join(f.pb, ".git"));
+  writeFileSync(path.join(f.pb, "value.txt"), "next base\n");
+  const head = f.git(f.upstream, "rev-parse", "HEAD");
+  failed(f.run());
+  assert.equal(f.git(f.upstream, "rev-parse", "HEAD"), head);
+});
+
+test("refuses an explicit core.worktree that could redirect staging commands", t => {
+  const f = fixture(t);
+  f.seed();
+  f.git(f.pb, "config", "core.worktree", f.pb);
+  failed(f.run("v0.41.0"));
+  assert.equal(readFileSync(path.join(f.pb, "value.txt"), "utf8"), "base\n");
+});

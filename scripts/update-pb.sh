@@ -8,11 +8,15 @@ PB_DIR="$PROJECT_DIR/internal/pocketbase"
 PATCHES_DIR="$PROJECT_DIR/patches"
 
 check_destination() {
-    if [ -L "$PB_DIR" ] || { [ -e "$PB_DIR" ] && [ ! -d "$PB_DIR/.git" ]; }; then
+    if [ -L "$PB_DIR" ] || [ -L "$PB_DIR/.git" ] || { [ -e "$PB_DIR" ] && [ ! -d "$PB_DIR/.git" ]; }; then
         echo "ERROR: refusing to replace a symlink or non-Git internal/pocketbase." >&2
         exit 1
     fi
     if [ -d "$PB_DIR/.git" ]; then
+        if [ -e "$PB_DIR/.git/commondir" ] || git -C "$PB_DIR" config --get core.worktree >/dev/null; then
+            echo "ERROR: internal/pocketbase must be a standalone Git checkout without core.worktree." >&2
+            exit 1
+        fi
         # Include ignored files: replacing the checkout must not delete local
         # data or build artifacts that git diff does not report.
         if ! git -C "$PB_DIR" diff --quiet || ! git -C "$PB_DIR" diff --cached --quiet || [ -n "$(git -C "$PB_DIR" ls-files --others)" ]; then
@@ -59,7 +63,15 @@ STAGING="$(mktemp -d "$PROJECT_DIR/internal/.pocketbase-update.XXXXXX")"
 echo "Fetching PocketBase ${VERSION}..."
 # Never fetch/checkout/reset in the active source tree. A missing tag, network
 # failure, or conflict anywhere in the patch stack must leave it untouched.
-git clone --depth 1 --branch "${VERSION}" https://github.com/pocketbase/pocketbase.git "$STAGING/next"
+if [ -d "$PB_DIR/.git" ]; then
+    # Copy Git metadata too: a clean working tree may still contain stashes,
+    # local branches, reflogs, and configuration that must survive an upgrade.
+    cp -a "$PB_DIR" "$STAGING/next"
+    git -C "$STAGING/next" fetch --depth 1 https://github.com/pocketbase/pocketbase.git "refs/tags/${VERSION}:refs/tags/${VERSION}"
+    git -C "$STAGING/next" checkout --detach "${VERSION}"
+else
+    git clone --depth 1 --branch "${VERSION}" https://github.com/pocketbase/pocketbase.git "$STAGING/next"
+fi
 
 echo "Applying patches..."
 for patch in "$PATCHES_DIR"/*.patch; do
